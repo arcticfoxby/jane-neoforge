@@ -25,7 +25,7 @@ class ClientRequirementClassifierTest {
         var clientRequired = version(EXACT_SHA512, CLIENT_REQUIRED);
         var forcedOut = classify(ClientRequirementClassifier.Override.NOT_REQUIRED, serverOnly, clientRequired);
         assertEquals(ClientRequirement.NOT_REQUIRED, forcedOut.requirement());
-        assertTrue(forcedOut.diagnostics().isEmpty());
+        assertTrue(forcedOut.diagnostics().stream().anyMatch(item -> item.contains("ignores")));
 
         var forcedIn = classify(ClientRequirementClassifier.Override.REQUIRED, serverOnly,
                 version(EXACT_SHA512, SERVER_ONLY));
@@ -35,12 +35,26 @@ class ClientRequirementClassifierTest {
 
     @Test
     void onlyCompleteAllDedicatedServerEntrypointsCanProveServerOnly() {
-        assertEquals(ClientRequirement.NOT_REQUIRED, classify(NONE, fml(DEDICATED_SERVER), null).requirement());
+        assertEquals(ClientRequirement.UNKNOWN, classify(NONE, fml(DEDICATED_SERVER), null).requirement());
         assertEquals(ClientRequirement.NOT_REQUIRED,
-                classify(NONE, fml(DEDICATED_SERVER, DEDICATED_SERVER), null).requirement());
-        assertEquals(ClientRequirement.REQUIRED, classify(NONE, fml(DEDICATED_SERVER, BOTH), null).requirement());
-        assertEquals(ClientRequirement.REQUIRED, classify(NONE, fml(CLIENT), null).requirement());
-        assertEquals(ClientRequirement.REQUIRED, classify(NONE, fml(DEFAULT), null).requirement());
+                ClientRequirementClassifier.classify(new ClientRequirementClassifier.Input(
+                        NONE, fml(DEDICATED_SERVER, DEDICATED_SERVER), null,
+                        verifiedEntrypoints())).requirement());
+        assertEquals(ClientRequirement.UNKNOWN, classify(NONE, fml(DEDICATED_SERVER, BOTH), null).requirement());
+        assertEquals(ClientRequirement.UNKNOWN, classify(NONE, fml(CLIENT), null).requirement());
+        assertEquals(ClientRequirement.UNKNOWN, classify(NONE, fml(DEFAULT), null).requirement());
+    }
+
+    @Test
+    void incompleteAnalysisCannotExcludeDespiteMatchingDedicatedEntrypoints() {
+        var analysis = new JarAnalysisResult(List.of(new JarEvidence(
+                JarEvidence.Source.BYTECODE_ANALYSIS, JarEvidence.Kind.ENTRYPOINT_MATCH,
+                true, "example", "current JAR matched FML")), false,
+                List.of("Embedded JAR was not analyzed"), 1, 0, 0);
+        var result = ClientRequirementClassifier.classify(new ClientRequirementClassifier.Input(
+                NONE, fml(DEDICATED_SERVER), null, analysis));
+        assertEquals(ClientRequirement.UNKNOWN, result.requirement());
+        assertTrue(result.includeInClientManifest());
     }
 
     @Test
@@ -75,19 +89,55 @@ class ClientRequirementClassifierTest {
 
     @Test
     void strongEvidenceConflictRequiresClientAndReportsDiagnostic() {
-        var fmlRequires = classify(NONE, fml(BOTH), version(EXACT_SHA512, SERVER_ONLY));
-        assertEquals(ClientRequirement.REQUIRED, fmlRequires.requirement());
-        assertFalse(fmlRequires.diagnostics().isEmpty());
+        var networkRequires = ClientRequirementClassifier.classify(new ClientRequirementClassifier.Input(
+                NONE, fml(BOTH), version(EXACT_SHA512, SERVER_ONLY),
+                new JarAnalysisResult(List.of(new JarEvidence(JarEvidence.Source.NETWORK_ANALYSIS,
+                        JarEvidence.Kind.REQUIRED_NETWORK, true, "Network#register", "required payload")),
+                        true, List.of(), 1, 0, 1)));
+        assertEquals(ClientRequirement.REQUIRED, networkRequires.requirement());
+        assertTrue(networkRequires.diagnostics().stream().anyMatch(item -> item.contains("disagree")));
 
         var modrinthRequires = classify(NONE, fml(DEDICATED_SERVER), version(EXACT_SHA512, CLIENT_REQUIRED));
         assertEquals(ClientRequirement.REQUIRED, modrinthRequires.requirement());
         assertFalse(modrinthRequires.diagnostics().isEmpty());
 
-        var incompleteButClientObserved = classify(NONE,
-                new ClientRequirementClassifier.FmlEvidence(false, List.of(BOTH)),
-                version(EXACT_SHA512, SERVER_ONLY));
-        assertEquals(ClientRequirement.REQUIRED, incompleteButClientObserved.requirement());
-        assertFalse(incompleteButClientObserved.diagnostics().isEmpty());
+    }
+
+    @Test
+    void optionalPayloadsAndDefaultEntrypointRemainUnknownWithReason() {
+        var result = ClientRequirementClassifier.classify(new ClientRequirementClassifier.Input(
+                NONE, fml(DEFAULT), null,
+                new JarAnalysisResult(List.of(new JarEvidence(JarEvidence.Source.NETWORK_ANALYSIS,
+                        JarEvidence.Kind.OPTIONAL_NETWORK, true, "Network#register", "optional payload")),
+                        true, List.of(), 1, 1, 0)));
+        assertEquals(ClientRequirement.UNKNOWN, result.requirement());
+        assertTrue(result.includeInClientManifest());
+        assertTrue(result.reason().contains("Optional payloads"));
+        assertTrue(result.evidence().stream().anyMatch(item ->
+                item.source() == ClientRequirementClassifier.EvidenceSource.NETWORK_ANALYSIS));
+    }
+
+    @Test
+    void confirmedRegistryContentRequiresClientDespiteIncompleteScan() {
+        var result = ClientRequirementClassifier.classify(new ClientRequirementClassifier.Input(
+                NONE, fml(BOTH), null,
+                new JarAnalysisResult(List.of(new JarEvidence(JarEvidence.Source.REGISTRY_ANALYSIS,
+                        JarEvidence.Kind.REQUIRED_REGISTRY, true, "Mod#register", "confirmed block")),
+                        false, List.of("Unresolved dynamic call"), 1, 0, 0)));
+        assertEquals(ClientRequirement.REQUIRED, result.requirement());
+        assertFalse(result.analysisComplete());
+    }
+
+    @Test
+    void dynamicRegistrationDoesNotExcludeJar() {
+        var result = ClientRequirementClassifier.classify(new ClientRequirementClassifier.Input(
+                NONE, fml(DEFAULT), null,
+                new JarAnalysisResult(List.of(new JarEvidence(JarEvidence.Source.BYTECODE_ANALYSIS,
+                        JarEvidence.Kind.DYNAMIC_OR_REFLECTIVE, false, "Mod#init", "reflection")),
+                        false, List.of("Reflection cannot be traced"), 1, 0, 0)));
+        assertEquals(ClientRequirement.UNKNOWN, result.requirement());
+        assertTrue(result.includeInClientManifest());
+        assertFalse(result.reason().isBlank());
     }
 
     private static ClientRequirementClassifier.FmlEvidence fml(ClientRequirementClassifier.EntrypointSide... sides) {
@@ -102,5 +152,11 @@ class ClientRequirementClassifierTest {
     private static ClientRequirementClassifier.Result classify(ClientRequirementClassifier.Override override,
             ClientRequirementClassifier.FmlEvidence fml, ClientRequirementClassifier.ModrinthEvidence modrinth) {
         return ClientRequirementClassifier.classify(new ClientRequirementClassifier.Input(override, fml, modrinth));
+    }
+
+    private static JarAnalysisResult verifiedEntrypoints() {
+        return new JarAnalysisResult(List.of(new JarEvidence(JarEvidence.Source.BYTECODE_ANALYSIS,
+                JarEvidence.Kind.ENTRYPOINT_MATCH, true, "example", "current JAR matched FML")),
+                true, List.of(), 2, 0, 0);
     }
 }

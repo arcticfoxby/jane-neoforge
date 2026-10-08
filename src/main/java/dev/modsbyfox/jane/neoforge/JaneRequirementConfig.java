@@ -2,6 +2,7 @@ package dev.modsbyfox.jane.neoforge;
 
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
+import dev.modsbyfox.jane.core.Hashing;
 import dev.modsbyfox.jane.core.ManifestEntry;
 import dev.modsbyfox.jane.core.PathSafety;
 import java.io.IOException;
@@ -30,11 +31,18 @@ public final class JaneRequirementConfig {
     private static final int MAX_BYTES = 64 * 1024;
     private final Map<String, ClientRequirementClassifier.Override> byModId;
     private final Map<String, ClientRequirementClassifier.Override> byJar;
+    private final String identity;
 
     private JaneRequirementConfig(Map<String, ClientRequirementClassifier.Override> byModId,
-                                  Map<String, ClientRequirementClassifier.Override> byJar) {
+                                  Map<String, ClientRequirementClassifier.Override> byJar, String identity) {
         this.byModId = Map.copyOf(byModId);
         this.byJar = Map.copyOf(byJar);
+        this.identity = identity;
+    }
+
+    /** Changes whenever the exact, validated override file content changes. */
+    public String identity() {
+        return identity;
     }
 
     /**
@@ -139,7 +147,7 @@ public final class JaneRequirementConfig {
     }
 
     private static JaneRequirementConfig empty() {
-        return new JaneRequirementConfig(Map.of(), Map.of());
+        return new JaneRequirementConfig(Map.of(), Map.of(), Hashing.sha256("<absent requirements.json>"));
     }
 
     private static JaneRequirementConfig parse(String content) throws IOException {
@@ -168,7 +176,7 @@ public final class JaneRequirementConfig {
                 throw new IOException("Trailing requirements config content");
             }
         }
-        return new JaneRequirementConfig(byModId, byJar);
+        return new JaneRequirementConfig(byModId, byJar, Hashing.sha256(content));
     }
 
     private static Map<String, ClientRequirementClassifier.Override> readOverrides(

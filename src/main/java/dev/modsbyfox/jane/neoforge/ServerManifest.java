@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -22,6 +23,10 @@ import org.slf4j.LoggerFactory;
 /** Builds one Protocol 3 entry per required top-level physical JAR. */
 public final class ServerManifest {
     private static final Logger LOGGER = LoggerFactory.getLogger("jane");
+    private static final PhysicalJarAnalysisCache<JarAnalysisResult> ANALYSIS_CACHE =
+            new PhysicalJarAnalysisCache<>(256);
+    private static final Map<String, Boolean> LOGGED_DECISIONS = new LinkedHashMap<>();
+    private static final int MAX_LOGGED_DECISIONS = 512;
 
     public record Evidence(ClientRequirementClassifier.Override override,
                            ClientRequirementClassifier.ModrinthEvidence modrinth) {
@@ -48,11 +53,16 @@ public final class ServerManifest {
     public static Prepared prepare(Path gameDir) throws IOException {
         JaneRequirementConfig config = JaneRequirementConfig.read(gameDir);
         return prepare(gameDir, NeoForgePhysicalDiscovery.discover(gameDir),
-                (jar, sha512) -> new Evidence(config.forJar(jar), null));
+                (jar, sha512) -> new Evidence(config.forJar(jar), null), config.identity());
     }
 
     public static Prepared prepare(Path gameDir, List<NeoForgePhysicalDiscovery.PhysicalJar> jars,
                                    EvidenceSource evidenceSource) throws IOException {
+        return prepare(gameDir, jars, evidenceSource, JaneRequirementConfig.read(gameDir).identity());
+    }
+
+    static Prepared prepare(Path gameDir, List<NeoForgePhysicalDiscovery.PhysicalJar> jars,
+                            EvidenceSource evidenceSource, String configIdentity) throws IOException {
         List<ManifestEntry> entries = new ArrayList<>();
         List<Classified> classified = new ArrayList<>();
         Map<String, Path> filesByHash = new HashMap<>();
@@ -73,15 +83,23 @@ public final class ServerManifest {
             String sha512 = Hashing.sha512(jar);
             if (Files.size(jar) != size || !Files.getLastModifiedTime(jar).equals(modified))
                 throw new IOException("Physical mod JAR changed while hashing: " + jar.getFileName());
+            JarAnalysisResult analysis;
+            try {
+                String evidenceIdentity = analysisIdentity(configIdentity, physical);
+                analysis = ANALYSIS_CACHE.getOrAnalyze(gameDir, jar, sha512, size, modified,
+                        evidenceIdentity, NeoForgeJarAnalyzer.RULE_VERSION,
+                        canonical -> NeoForgeJarAnalyzer.analyze(gameDir, physical));
+            } catch (RuntimeException failure) {
+                throw new IOException("Physical mod JAR analysis failed: " + jar.getFileName(), failure);
+            }
             Evidence evidence = evidenceSource.forJar(physical, sha512);
             if (evidence == null) evidence = Evidence.NONE;
             ClientRequirementClassifier.Result decision = ClientRequirementClassifier.classify(
-                    new ClientRequirementClassifier.Input(evidence.override(), physical.fmlEvidence(), evidence.modrinth()));
+                    new ClientRequirementClassifier.Input(evidence.override(), physical.fmlEvidence(),
+                            evidence.modrinth(), analysis));
             classified.add(new Classified(physical, decision, size, sha512));
-            for (String diagnostic : decision.diagnostics())
-                LOGGER.warn("Jane mod={} file={} classification: {}", physical.canonicalId(), jar.getFileName(), diagnostic);
+            logDecision(physical, jar, sha512, configIdentity, analysis, decision);
             if (!decision.includeInClientManifest()) {
-                LOGGER.info("Jane mod={} file={} client requirement=NOT_REQUIRED", physical.canonicalId(), jar.getFileName());
                 continue;
             }
             if (size > ManifestEntry.MAX_FILE_SIZE)
@@ -95,13 +113,61 @@ public final class ServerManifest {
             if (entries.size() > RequiredManifest.MAX_ENTRIES)
                 throw new IOException("Required physical mod count exceeds Protocol 3 limit");
             filesByHash.put(sha512, jar);
-            LOGGER.info("Jane mod={} file={} client requirement={} hash={}", physical.canonicalId(),
-                    jar.getFileName(), decision.requirement(), sha512.substring(0, 12));
         }
         try {
             return new Prepared(new RequiredManifest(RequiredManifest.PROTOCOL, entries), classified, filesByHash);
         } catch (IllegalArgumentException exception) {
             throw new IOException("Invalid physical required manifest", exception);
+        }
+    }
+
+    /** Cache observations are tied to both file bytes and the FML snapshot they interpreted. */
+    private static String analysisIdentity(String configIdentity,
+                                           NeoForgePhysicalDiscovery.PhysicalJar physical) {
+        StringBuilder data = new StringBuilder();
+        appendIdentityPart(data, configIdentity);
+        appendIdentityPart(data, physical.canonicalId());
+        appendIdentityPart(data, physical.displayName());
+        appendIdentityPart(data, physical.version());
+        data.append(physical.fmlEvidence().complete() ? '1' : '0');
+        data.append(physical.modIds().size()).append(':');
+        for (String modId : physical.modIds()) appendIdentityPart(data, modId);
+        data.append(physical.fmlEvidence().entrypoints().size()).append(':');
+        for (ClientRequirementClassifier.EntrypointSide side : physical.fmlEvidence().entrypoints())
+            appendIdentityPart(data, side.name());
+        data.append(physical.dependencyDescriptions().size()).append(':');
+        for (String dependency : physical.dependencyDescriptions()) appendIdentityPart(data, dependency);
+        return Hashing.sha256(data.toString());
+    }
+
+    private static void appendIdentityPart(StringBuilder data, String value) {
+        data.append(value.length()).append(':').append(value);
+    }
+
+    private static void logDecision(NeoForgePhysicalDiscovery.PhysicalJar physical, Path jar, String sha512,
+                                    String configIdentity, JarAnalysisResult analysis,
+                                    ClientRequirementClassifier.Result decision) {
+        String signature = jar + "|" + sha512 + "|" + configIdentity + "|"
+                + NeoForgeJarAnalyzer.RULE_VERSION + "|" + decision.requirement() + "|" + decision.reason();
+        synchronized (LOGGED_DECISIONS) {
+            if (LOGGED_DECISIONS.putIfAbsent(signature, Boolean.TRUE) != null) return;
+            if (LOGGED_DECISIONS.size() > MAX_LOGGED_DECISIONS)
+                LOGGED_DECISIONS.remove(LOGGED_DECISIONS.keySet().iterator().next());
+        }
+        LOGGER.info("Jane mod={} file={} ids={} client requirement={} manifest={} reason={} hash={}",
+                physical.canonicalId(), jar.getFileName(), physical.modIds(), decision.requirement(),
+                decision.includeInClientManifest() ? "included" : "excluded",
+                decision.reason(), sha512.substring(0, 12));
+        LOGGER.debug("Jane mod={} analysis complete={} classes={} optionalPayloads={} requiredPayloads={}",
+                physical.canonicalId(), decision.analysisComplete(), analysis.scannedClasses(),
+                analysis.optionalPayloads(), analysis.requiredPayloads());
+        for (ClientRequirementClassifier.DecisionEvidence item : decision.evidence())
+            LOGGER.debug("Jane mod={} evidence source={} type={} outcome={} complete={} detail={}",
+                    physical.canonicalId(), item.source(), item.type(), item.outcome(), item.complete(), item.detail());
+        for (String diagnostic : decision.diagnostics()) {
+            if (!diagnostic.equals(decision.reason()))
+                LOGGER.warn("Jane mod={} file={} classification: {}", physical.canonicalId(),
+                        jar.getFileName(), diagnostic);
         }
     }
 }

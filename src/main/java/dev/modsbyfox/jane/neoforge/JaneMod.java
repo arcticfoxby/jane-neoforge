@@ -17,12 +17,17 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.loading.FMLEnvironment;
 import net.neoforged.fml.loading.FMLPaths;
+import net.neoforged.neoforge.common.NeoForge;
+import net.neoforged.neoforge.event.server.ServerStartingEvent;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Common NeoForge entrypoint; the client adapter is loaded only on a physical client. */
 @Mod(JaneMod.MOD_ID)
 public final class JaneMod {
     public static final String MOD_ID = "jane";
+    private static final Logger LOGGER = LoggerFactory.getLogger("jane");
     private static final Semaphore MANIFEST_SLOTS = new Semaphore(2);
     private static final ExecutorService MANIFEST_WORKERS = Executors.newFixedThreadPool(2,
             Thread.ofPlatform().daemon().name("jane-manifest-", 0).factory());
@@ -31,6 +36,22 @@ public final class JaneMod {
         JaneConfigurationNetwork.ClientEvaluator evaluator = FMLEnvironment.dist == Dist.CLIENT
                 ? ClientDelegate::evaluate : null;
         JaneConfigurationNetwork.register(modBus, JaneMod::prepareManifest, evaluator);
+        NeoForge.EVENT_BUS.addListener(JaneMod::onServerStarting);
+    }
+
+    /** Warm the validated physical-JAR analysis cache before clients connect. */
+    private static void onServerStarting(ServerStartingEvent event) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                Path gameDir = FMLPaths.GAMEDIR.get();
+                ServerManifest.Prepared prepared = ServerManifest.prepare(gameDir);
+                LOGGER.info("Jane server manifest prepared: physicalJars={} requiredEntries={}",
+                        prepared.classified().size(), prepared.manifest().entries().size());
+            } catch (IOException | RuntimeException exception) {
+                // A later connection will retry and fail closed if the fault persists.
+                LOGGER.warn("Jane server manifest startup analysis failed", exception);
+            }
+        }, MANIFEST_WORKERS);
     }
 
     private static CompletableFuture<ManifestCodec.LoginOffer> prepareManifest() throws IOException {
@@ -44,7 +65,8 @@ public final class JaneMod {
             return CompletableFuture.supplyAsync(() -> {
                 try {
                     return new ManifestCodec.LoginOffer(ServerManifest.prepare(gameDir, jars,
-                            (jar, sha512) -> new ServerManifest.Evidence(config.forJar(jar), null)).manifest(), null);
+                            (jar, sha512) -> new ServerManifest.Evidence(config.forJar(jar), null),
+                            config.identity()).manifest(), null);
                 } catch (IOException exception) {
                     throw new CompletionException(exception);
                 }

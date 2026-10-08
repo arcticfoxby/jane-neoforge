@@ -1,12 +1,14 @@
 package dev.modsbyfox.jane.neoforge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -46,6 +48,30 @@ class JaneRequirementConfigTest {
         write("{\"byModId\":{\"alpha\":\"NOT_REQUIRED\",\"beta\":\"NOT_REQUIRED\"}}");
         assertEquals(ClientRequirementClassifier.Override.NOT_REQUIRED,
                 JaneRequirementConfig.read(gameDir).forJar(jar("bundle.jar", "alpha", "beta")));
+    }
+
+    @Test
+    void identityChangesWhenSameSizeConfigContentChangesWithoutMtimeChange() throws IOException {
+        String firstContent = "{\"byModId\":{\"alpha\":\"REQUIRED\"}}";
+        String secondContent = "{\"byModId\":{\"bravo\":\"REQUIRED\"}}";
+        assertEquals(firstContent.getBytes(StandardCharsets.UTF_8).length,
+                secondContent.getBytes(StandardCharsets.UTF_8).length);
+
+        write(firstContent);
+        Path file = configPath();
+        FileTime originalTime = Files.getLastModifiedTime(file);
+        String firstIdentity = JaneRequirementConfig.read(gameDir).identity();
+        assertEquals(firstIdentity, JaneRequirementConfig.read(gameDir).identity());
+
+        write(secondContent);
+        Files.setLastModifiedTime(file, originalTime);
+        assertEquals(originalTime, Files.getLastModifiedTime(file));
+        JaneRequirementConfig changed = JaneRequirementConfig.read(gameDir);
+        assertNotEquals(firstIdentity, changed.identity());
+        assertEquals(ClientRequirementClassifier.Override.NONE,
+                changed.forJar(jar("alpha.jar", "alpha")));
+        assertEquals(ClientRequirementClassifier.Override.REQUIRED,
+                changed.forJar(jar("bravo.jar", "bravo")));
     }
 
     @Test
