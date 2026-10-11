@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.List;
 
 /** Transactional Windows helper for moving selected local JARs out of mods after JVM exit. */
 public final class ClientDisableBatch {
@@ -63,8 +64,21 @@ public final class ClientDisableBatch {
                 + "set \"JANE_RESTORE_ATTEMPTED=已移动的文件已尝试恢复。\"\r\n"
                 + "set \"JANE_CHECK=请检查 mods 和 jane\\disabled 中的文件。\"\r\n"
                 + "set \"JANE_ROLLBACK_ERROR=恢复过程遇到错误，请检查 mods 与 Jane disabled 目录。\"\r\n");
+        bat.append("where certutil.exe >nul 2>nul\r\nif errorlevel 1 goto unsafe\r\n")
+                .append("where fsutil.exe >nul 2>nul\r\nif errorlevel 1 goto unsafe\r\n");
+        for (String directory : List.of("mods", "jane", "jane\\disabled",
+                "jane\\disabled\\" + plan.serverId(), folder)) {
+            bat.append("call :safe_dir \"").append(directory).append("\"\r\nif errorlevel 1 goto unsafe\r\n");
+        }
+        for (String file : List.of(log, folder + "\\pid.txt")) {
+            bat.append("fsutil reparsepoint query \"").append(file)
+                    .append("\" >nul 2>nul\r\nif not errorlevel 1 goto unsafe\r\n");
+        }
         bat.append("> \"").append(log).append("\" echo DISABLE ").append(plan.timestamp())
-                .append(" SERVER ").append(plan.serverId()).append("\r\nif errorlevel 1 goto failure\r\n");
+                .append(" SERVER ").append(plan.serverId())
+                .append("\r\nif not exist \"").append(log).append("\" goto unsafe\r\n")
+                .append("fsutil reparsepoint query \"").append(log)
+                .append("\" >nul 2>nul\r\nif not errorlevel 1 goto unsafe\r\n");
         bat.append("echo ================================\r\necho %JANE_TITLE%\r\necho ================================\r\n")
                 .append("echo.\r\necho %JANE_WAIT%\r\n:wait\r\n");
         bat.append("tasklist /FI \"PID eq ").append(pid).append("\" /FO CSV /NH > \"")
@@ -73,19 +87,34 @@ public final class ClientDisableBatch {
                 .append("\\pid.txt\" >nul\r\nif errorlevel 1 goto begin_disable\r\n")
                 .append("timeout /t 1 /nobreak >nul\r\ngoto wait\r\n:begin_disable\r\n")
                 .append("echo %JANE_CLOSED%\r\necho.\r\n");
+        for (String directory : List.of("mods", "jane", "jane\\disabled",
+                "jane\\disabled\\" + plan.serverId(), folder)) {
+            bat.append("call :safe_dir \"").append(directory).append("\"\r\nif errorlevel 1 goto unsafe\r\n");
+        }
+        bat.append("fsutil reparsepoint query \"").append(log)
+                .append("\" >nul 2>nul\r\nif not errorlevel 1 goto unsafe\r\n");
         for (int i = 0; i < plan.entries().size(); i++) {
             ClientDisablePlan.Entry entry = plan.entries().get(i);
             String name = entry.filename();
             bat.append("echo %JANE_PROGRESS% ").append(i + 1).append("/")
                     .append(plan.entries().size()).append("\r\n");
-            bat.append("if not exist \"mods\\").append(name).append("\" goto rollback\r\n");
-            bat.append("if exist \"").append(folder).append("\\").append(name).append("\" goto rollback\r\n");
-            bat.append("move \"mods\\").append(name).append("\" \"").append(folder)
-                    .append("\\").append(name).append("\" >nul 2>nul\r\nif errorlevel 1 goto rollback\r\n");
-            bat.append("set \"JANE_MOVED=").append(i + 1).append("\"\r\n");
+            bat.append("call :verify_jar \"mods\\").append(name).append("\" ")
+                    .append(entry.sha512()).append(" -\r\nif errorlevel 1 goto rollback\r\n")
+                    .append("call :target_absent \"").append(folder).append("\\")
+                    .append(name).append("\"\r\nif errorlevel 1 goto rollback\r\n")
+                    .append("move /-Y \"mods\\").append(name).append("\" \"").append(folder)
+                    .append("\\").append(name).append("\" <nul >nul 2>nul\r\nif errorlevel 1 goto rollback\r\n")
+                    .append("set \"JANE_MOVED=").append(i + 1).append("\"\r\n")
+                    .append("call :target_absent \"mods\\").append(name)
+                    .append("\"\r\nif errorlevel 1 goto rollback\r\n")
+                    .append("call :verify_jar \"").append(folder).append("\\")
+                    .append(name).append("\" ").append(entry.sha512())
+                    .append(" -\r\nif errorlevel 1 goto rollback\r\n");
             bat.append(">> \"").append(log).append("\" echo MOVE ").append(entry.modId()).append(" OK\r\n");
         }
-        bat.append("> \"").append(folder).append("\\success.marker\" echo SUCCESS\r\n")
+        bat.append("call :target_absent \"").append(folder)
+                .append("\\success.marker\"\r\nif errorlevel 1 goto rollback\r\n")
+                .append("> \"").append(folder).append("\\success.marker\" echo SUCCESS\r\n")
                 .append("if errorlevel 1 goto rollback\r\n")
                 .append(">> \"").append(log).append("\" echo SUCCESS\r\n")
                 .append("echo ================================\r\necho %JANE_DONE%\r\necho ================================\r\n")
@@ -102,11 +131,13 @@ public final class ClientDisableBatch {
             ClientDisablePlan.Entry entry = plan.entries().get(i);
             String name = entry.filename();
             bat.append("if %JANE_MOVED% LSS ").append(i + 1).append(" goto rollback_next_").append(i).append("\r\n")
-                    .append("if exist \"mods\\").append(name).append("\" goto rollback_bad_").append(i).append("\r\n")
-                    .append("if not exist \"").append(folder).append("\\").append(name)
-                    .append("\" goto rollback_bad_").append(i).append("\r\n")
-                    .append("move \"").append(folder).append("\\").append(name).append("\" \"mods\\")
-                    .append(name).append("\" >nul 2>nul\r\nif errorlevel 1 goto rollback_bad_")
+                    .append("call :verify_jar \"").append(folder).append("\\").append(name)
+                    .append("\" ").append(entry.sha512()).append(" -\r\n")
+                    .append("if errorlevel 1 goto rollback_bad_").append(i).append("\r\n")
+                    .append("call :target_absent \"mods\\").append(name)
+                    .append("\"\r\nif errorlevel 1 goto rollback_bad_").append(i).append("\r\n")
+                    .append("move /-Y \"").append(folder).append("\\").append(name).append("\" \"mods\\")
+                    .append(name).append("\" <nul >nul 2>nul\r\nif errorlevel 1 goto rollback_bad_")
                     .append(i).append("\r\n")
                     .append(">> \"").append(log).append("\" echo ROLLBACK ").append(entry.modId())
                     .append(" OK\r\ngoto rollback_next_").append(i).append("\r\n")
@@ -114,12 +145,17 @@ public final class ClientDisableBatch {
                     .append(">> \"").append(log).append("\" echo ROLLBACK ").append(entry.modId())
                     .append(" FAILED\r\n:rollback_next_").append(i).append("\r\n");
         }
-        bat.append(":failure\r\n> \"").append(folder).append("\\failed.marker\" echo FAILED\r\n")
+        bat.append(":failure\r\ncall :target_absent \"").append(folder)
+                .append("\\failed.marker\"\r\nif errorlevel 1 goto failed_log\r\n")
+                .append("> \"").append(folder).append("\\failed.marker\" echo FAILED\r\n")
+                .append(":failed_log\r\n")
                 .append(">> \"").append(log).append("\" echo FAILED\r\n")
                 .append("echo ================================\r\necho %JANE_NOT_DONE%\r\necho ================================\r\n")
                 .append("echo %JANE_RESTORE_ATTEMPTED%\r\necho %JANE_CHECK%\r\n")
                 .append("if \"%JANE_ROLLBACK_FAILED%\"==\"1\" echo %JANE_ROLLBACK_ERROR%\r\n")
-                .append("echo.\r\necho %JANE_EXIT%\r\npause >nul\r\nexit /b 1\r\n");
+                .append("echo.\r\necho %JANE_EXIT%\r\npause >nul\r\nexit /b 1\r\n")
+                .append(":unsafe\r\nexit /b 1\r\n");
+        WindowsBatch.appendSafetySubroutines(bat);
         return bat.toString();
     }
 }

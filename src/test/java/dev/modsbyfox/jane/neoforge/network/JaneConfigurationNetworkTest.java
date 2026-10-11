@@ -13,7 +13,9 @@ import io.netty.buffer.Unpooled;
 import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.List;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -25,6 +27,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.PacketFlow;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.network.protocol.configuration.ServerConfigurationPacketListener;
+import net.minecraft.server.network.ConfigurationTask;
 import net.neoforged.neoforge.common.extensions.ICommonPacketListener;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 import org.junit.jupiter.api.Test;
@@ -34,7 +37,24 @@ class JaneConfigurationNetworkTest {
             new ManifestCodec.LoginOffer(new RequiredManifest(RequiredManifest.PROTOCOL, List.of()), null);
 
     @Test
-    void manifestPayloadFramesProtocolThreeBytesAndRejectsOversize() throws IOException {
+    void earlyTaskIsQueuedOnlyForNegotiatedConnections() {
+        JaneConfigurationNetwork network = network(() -> CompletableFuture.completedFuture(OFFER), null,
+                Duration.ofSeconds(2));
+        CallLog supported = new CallLog(true);
+        Queue<ConfigurationTask> tasks = new ArrayDeque<>();
+        assertTrue(network.addEarlyTask(supported.serverListener(), tasks::add));
+        assertTrue(tasks.remove() instanceof JaneConfigurationNetwork.ManifestTask);
+        assertFalse(supported.disconnected);
+
+        CallLog missing = new CallLog(true);
+        missing.channels = false;
+        assertFalse(network.addEarlyTask(missing.serverListener(), tasks::add));
+        assertTrue(missing.disconnected);
+        assertTrue(tasks.isEmpty());
+    }
+
+    @Test
+    void manifestPayloadFramesCurrentProtocolBytesAndRejectsOversize() throws IOException {
         ManifestPayload original = new ManifestPayload(ManifestCodec.encode(OFFER));
         FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer());
         ManifestPayload.STREAM_CODEC.encode(buffer, original);
@@ -86,6 +106,33 @@ class JaneConfigurationNetworkTest {
         network.handleResult(client.reply, server.context());
         assertTrue(server.disconnected);
         assertFalse(server.finished);
+    }
+
+    @Test
+    void userOverrideFinishesOnlyJaneTaskAndIsDistinctFromExactPass() {
+        JaneConfigurationNetwork network = network(() -> CompletableFuture.completedFuture(OFFER),
+                (offer, context) -> CompletableFuture.completedFuture(ResultPayload.Status.USER_OVERRIDE),
+                Duration.ofSeconds(2));
+        CallLog server = new CallLog(true);
+        network.new ManifestTask(server.serverListener()).run(payload -> {});
+        CallLog client = new CallLog(false);
+        network.handleManifest(payload(), client.context());
+        assertEquals(ResultPayload.Status.USER_OVERRIDE, client.reply.status());
+        assertFalse(client.disconnected);
+        network.handleResult(client.reply, server.context());
+        assertTrue(server.finished);
+        assertFalse(server.disconnected);
+    }
+
+    @Test
+    void resultPayloadKeepsUserOverrideDistinctAndUnknownStatusFailsClosed() {
+        FriendlyByteBuf encoded = new FriendlyByteBuf(Unpooled.buffer());
+        ResultPayload.STREAM_CODEC.encode(encoded, new ResultPayload(ResultPayload.Status.USER_OVERRIDE));
+        assertEquals(ResultPayload.Status.USER_OVERRIDE, ResultPayload.STREAM_CODEC.decode(encoded).status());
+
+        FriendlyByteBuf invalid = new FriendlyByteBuf(Unpooled.buffer());
+        invalid.writeByte(127);
+        assertEquals(ResultPayload.Status.PROTOCOL_ERROR, ResultPayload.STREAM_CODEC.decode(invalid).status());
     }
 
     @Test
@@ -233,6 +280,7 @@ class JaneConfigurationNetworkTest {
         private volatile ResultPayload reply;
         private volatile boolean disconnected;
         private volatile boolean finished;
+        private boolean channels = true;
 
         private CallLog(boolean server) {
             Class<?> listenerType = server ? ServerConfigurationPacketListener.class : ICommonPacketListener.class;
@@ -240,6 +288,7 @@ class JaneConfigurationNetworkTest {
                     new Class<?>[] { listenerType }, (proxy, method, args) -> switch (method.getName()) {
                         case "getConnection" -> connection;
                         case "isAcceptingMessages" -> connection.connected;
+                        case "hasChannel" -> channels;
                         case "disconnect" -> {
                             assertTrue(args[0] instanceof Component);
                             disconnect();

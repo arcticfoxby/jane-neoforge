@@ -11,6 +11,10 @@ class MinecraftTransferMarkerTest {
     @Test void exactNameAndUuidAreRequired() {
         assertTrue(MinecraftTransferMarker.matches(MinecraftTransferMarker.PROFILE_NAME,
                 Optional.of(MinecraftTransferMarker.PROFILE_ID)));
+        assertTrue(MinecraftTransferMarker.matches(MinecraftTransferMarker.PROFILE_NAME,
+                MinecraftTransferMarker.PROFILE_ID));
+        assertFalse(MinecraftTransferMarker.matches("NormalUser", MinecraftTransferMarker.PROFILE_ID));
+        assertFalse(MinecraftTransferMarker.matches(MinecraftTransferMarker.PROFILE_NAME, (UUID) null));
         assertFalse(MinecraftTransferMarker.matches("NormalUser", Optional.of(MinecraftTransferMarker.PROFILE_ID)));
         assertFalse(MinecraftTransferMarker.matches(MinecraftTransferMarker.PROFILE_NAME, Optional.empty()));
         assertFalse(MinecraftTransferMarker.matches(MinecraftTransferMarker.PROFILE_NAME, Optional.of(UUID.randomUUID())));

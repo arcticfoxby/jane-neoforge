@@ -62,7 +62,8 @@ class ClientDisablePlanTest {
         var mod = mod(name, "sodiumextra");
         ClientDisablePlan plan = ClientDisablePlan.prepare(game, SERVER, report(mod), List.of(mod));
         assertEquals(name, plan.entries().get(0).filename());
-        assertEquals(0, run(plan));
+        int exit = run(plan);
+        assertEquals(0, exit, lastOutput);
         Path disabled = game.resolve("jane/disabled/" + SERVER + "/" + plan.timestamp());
         assertFalse(Files.exists(mod.jar()));
         assertEquals(mod.sha512(), Hashing.sha512(disabled.resolve(name)));
@@ -123,6 +124,18 @@ class ClientDisablePlanTest {
         assertTrue(lastOutput.contains("已移动的文件已尝试恢复"), lastOutput);
     }
 
+    @Test void changedClientJarAfterApprovalIsNotDisabled() throws Exception {
+        Assumptions.assumeTrue(isWindows());
+        var sodium = mod("sodium.jar", "sodium");
+        ClientDisablePlan plan = ClientDisablePlan.prepare(game, SERVER, report(sodium), List.of(sodium));
+        Path script = ClientDisableBatch.write(game, plan, 2147483647L);
+        Files.writeString(sodium.jar(), "changed after approval");
+        assertNotEquals(0, runScript(script));
+        assertEquals("changed after approval", Files.readString(sodium.jar()));
+        assertFalse(Files.exists(script.getParent().resolve("sodium.jar")));
+        assertTrue(Files.exists(script.getParent().resolve("failed.marker")));
+    }
+
     @Test void rollbackFailureIsReportedWithoutClaimingFullRestoration() throws Exception {
         Assumptions.assumeTrue(isWindows());
         var sodium = mod("sodium.jar", "sodium");
@@ -132,8 +145,8 @@ class ClientDisablePlanTest {
         Path disabled = script.getParent();
         Files.writeString(disabled.resolve("iris.jar"), "collision");
         String source = Files.readString(script);
-        String check = "if exist \"jane\\disabled\\" + SERVER + "\\" + plan.timestamp()
-                + "\\iris.jar\" goto rollback";
+        String check = "call :target_absent \"jane\\disabled\\" + SERVER + "\\" + plan.timestamp()
+                + "\\iris.jar\"";
         assertTrue(source.contains(check));
         Files.writeString(script, source.replace(check,
                 "> \"mods\\sodium.jar\" echo collision\r\n" + check), StandardCharsets.UTF_8);

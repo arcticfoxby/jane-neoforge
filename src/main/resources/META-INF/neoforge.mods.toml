@@ -2,12 +2,19 @@ modLoader="javafml"
 loaderVersion="${loader_version_range}"
 license="${mod_license}"
 
+[[mixins]]
+config="jane.mixins.json"
+
+[[mixins]]
+config="jane-client.mixins.json"
+
 [[mods]]
 modId="${mod_id}"
 version="${mod_version}"
 displayName="${mod_name}"
+authors="Arcticfox"
 description='''
-Jane verifies the exact physical mod JARs required by a server before joining.
+Jane checks server-required physical mod JARs and offers verified client synchronization before joining.
 '''
 
 [[dependencies.${mod_id}]]

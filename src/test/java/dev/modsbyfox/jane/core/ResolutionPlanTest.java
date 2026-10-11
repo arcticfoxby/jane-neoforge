@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -204,6 +205,31 @@ class ResolutionPlanTest {
         assertEquals(3, session.snapshot().resolutionProcessed());
         assertTrue(session.startDownloads(ResolutionPlan.Classification.MODRINTH_DOWNLOADABLE));
         assertFalse(session.startDownloads(ResolutionPlan.Classification.MODRINTH_DOWNLOADABLE));
+    }
+
+    @Test
+    void abortedSourceResolutionCanRetryWithoutLosingSelection() throws Exception {
+        List<Comparison.Result> comparisons = missing(2);
+        RequiredManifest manifest = new RequiredManifest(RequiredManifest.PROTOCOL,
+                comparisons.stream().map(Comparison.Result::required).toList());
+        JaneSyncSession session = new JaneSyncSession(new PendingSyncContext("example.org", manifest, comparisons));
+        session.selectModIds(Set.of("mod0"));
+        assertTrue(session.beginResolution(2));
+        session.resolutionProgress(1);
+        assertTrue(session.abortResolution());
+        assertFalse(session.resolutionStarted());
+        assertNull(session.snapshot().resolution());
+        assertEquals(0, session.snapshot().resolutionProcessed());
+        assertEquals(Set.of("mod0"), session.snapshot().selectedModIds());
+        assertTrue(session.beginResolution(2));
+        session.publishResolution(ResolutionPlan.resolve(comparisons, entry -> Optional.of(source(entry))));
+        assertEquals(Set.of("mod0"), session.snapshot().selectedModIds());
+        assertTrue(session.abortResolution());
+        assertTrue(session.beginResolution(2));
+        session.publishResolution(ResolutionPlan.resolve(comparisons, entry -> Optional.of(source(entry))));
+        assertTrue(session.startTransfer(ResolutionPlan.TransferGroup.TRUSTED,
+                ResolutionPlan.TransferRoute.TRUSTED_SOURCE));
+        assertFalse(session.abortResolution());
     }
 
     @Test

@@ -19,7 +19,9 @@ public final class SyncNotice {
         }
         if (snapshot.failedCount(ResolutionPlan.Availability.SERVER_ONLY) > 0) return Kind.SERVER_ONLY_FAILED;
         if (!snapshot.groupReady(ResolutionPlan.TransferGroup.SERVER_ONLY)) return Kind.SERVER_ONLY_REMAINING;
-        if (plan.count(ResolutionPlan.Availability.LOOKUP_FAILED) > 0) return Kind.LOOKUP_FAILED;
+        if (plan.items().stream().anyMatch(item -> item.availability() == ResolutionPlan.Availability.LOOKUP_FAILED
+                && snapshot.selectedModIds().contains(item.comparison().required().modId())))
+            return Kind.LOOKUP_FAILED;
         return Kind.INCOMPLETE;
     }
 }

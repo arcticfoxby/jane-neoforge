@@ -20,7 +20,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Builds one Protocol 3 entry per required top-level physical JAR. */
+/** Builds one entry per required top-level physical JAR. */
 public final class ServerManifest {
     private static final Logger LOGGER = LoggerFactory.getLogger("jane");
     private static final PhysicalJarAnalysisCache<JarAnalysisResult> ANALYSIS_CACHE =
@@ -103,7 +103,7 @@ public final class ServerManifest {
                 continue;
             }
             if (size > ManifestEntry.MAX_FILE_SIZE)
-                throw new IOException("Required physical mod JAR exceeds Protocol 3 size limit: " + jar.getFileName());
+                throw new IOException("Required physical mod JAR exceeds Jane protocol size limit: " + jar.getFileName());
             try {
                 entries.add(new ManifestEntry(physical.canonicalId(), physical.displayName(), physical.version(),
                         size, sha512));
@@ -111,7 +111,7 @@ public final class ServerManifest {
                 throw new IOException("Invalid required mod metadata: " + jar.getFileName(), exception);
             }
             if (entries.size() > RequiredManifest.MAX_ENTRIES)
-                throw new IOException("Required physical mod count exceeds Protocol 3 limit");
+                throw new IOException("Required physical mod count exceeds Jane protocol limit");
             filesByHash.put(sha512, jar);
         }
         try {

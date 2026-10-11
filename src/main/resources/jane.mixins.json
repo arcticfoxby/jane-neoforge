@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8.5",
+  "package": "dev.modsbyfox.jane.neoforge.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "ServerConfigurationEarlyTaskMixin",
+    "ServerLoginTakeoverMixin",
+    "ServerLoginPreflightMixin",
+    "ServerboundJaneLoginAnswerMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

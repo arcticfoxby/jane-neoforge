@@ -95,4 +95,45 @@ class PendingRecoveryTest {
         assertFalse(Files.exists(pending));
         assertFalse(Files.exists(stage));
     }
+
+    @Test
+    void verifiedUpdateKeepsOriginalUpdaterLogInBackup() throws Exception {
+        Path mods = Files.createDirectory(gameDir.resolve("mods"));
+        Path installed = Files.writeString(mods.resolve("new.jar"), "verified bytes");
+        UpdatePlan plan = new UpdatePlan(ID, SERVER, STAMP, List.of(new UpdatePlan.Operation(
+                "create", UpdatePlan.Kind.ADD, null, null, "new.jar",
+                Hashing.sha512(installed), Files.size(installed))));
+        Path pending = PendingStore.create(gameDir, plan);
+        Path backup = PathSafety.janeDirectory(gameDir, "backups", SERVER, STAMP);
+        Files.copy(pending.resolve("backup.json"), backup.resolve("backup.json"));
+        Path staging = PathSafety.janeDirectory(gameDir, "staging", ID);
+        Files.copy(installed, staging.resolve("new.jar"));
+        Files.writeString(pending.resolve("update.log"), "original updater log\n");
+        Files.writeString(pending.resolve("success.marker"), "SUCCESS\n");
+
+        assertTrue(PendingRecovery.scan(gameDir).isEmpty());
+        assertEquals("original updater log\n", Files.readString(backup.resolve("update.log")));
+        assertFalse(Files.exists(pending));
+    }
+
+    @Test
+    void unsafeUpdaterLogStopsCleanupAndKeepsPendingForReview() throws Exception {
+        Path mods = Files.createDirectory(gameDir.resolve("mods"));
+        Path installed = Files.writeString(mods.resolve("new.jar"), "verified bytes");
+        UpdatePlan plan = new UpdatePlan(ID, SERVER, STAMP, List.of(new UpdatePlan.Operation(
+                "create", UpdatePlan.Kind.ADD, null, null, "new.jar",
+                Hashing.sha512(installed), Files.size(installed))));
+        Path pending = PendingStore.create(gameDir, plan);
+        Path backup = PathSafety.janeDirectory(gameDir, "backups", SERVER, STAMP);
+        Files.copy(pending.resolve("backup.json"), backup.resolve("backup.json"));
+        Files.copy(installed, PathSafety.janeDirectory(gameDir, "staging", ID).resolve("new.jar"));
+        Files.createDirectory(pending.resolve("update.log"));
+        Files.writeString(pending.resolve("success.marker"), "SUCCESS\n");
+
+        var items = PendingRecovery.scan(gameDir);
+        assertEquals(1, items.size());
+        assertNotNull(items.get(0).issue());
+        assertTrue(Files.isDirectory(pending.resolve("update.log")));
+        assertFalse(Files.exists(backup.resolve("success.marker")));
+    }
 }

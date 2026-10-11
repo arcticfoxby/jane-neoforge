@@ -15,6 +15,7 @@ import org.junit.jupiter.api.io.TempDir;
 class WindowsBatchIntegrationTest {
     @TempDir Path root;
     Path gameDir;
+    private String lastOutput;
     private static final String ID = "12345678-1234-1234-1234-123456789abc";
     private static final String SERVER = "b".repeat(64);
 
@@ -32,7 +33,7 @@ class WindowsBatchIntegrationTest {
         UpdatePlan plan = plan(List.of(new UpdatePlan.Operation("create", UpdatePlan.Kind.REPLACE,
                 "old.jar", Hashing.sha512(old), "new.jar", Hashing.sha512(fresh), Files.size(fresh))));
         int exit = run(plan);
-        assertEquals(0, exit);
+        assertEquals(0, exit, lastOutput);
         assertFalse(Files.exists(old));
         assertEquals("new", Files.readString(mods.resolve("new.jar")));
         assertEquals("old", Files.readString(gameDir.resolve("jane/backups/" + SERVER + "/" + plan.timestamp() + "/old.jar")));
@@ -50,8 +51,9 @@ class WindowsBatchIntegrationTest {
                 oldName, "a".repeat(128), "farmers-delight-refabricated-2.5.4.jar", "b".repeat(128), 100)));
         String bat = WindowsBatch.generate(plan, 12345);
         assertTrue(bat.contains("chcp 65001"));
-        assertTrue(bat.contains("move /Y \"mods\\" + oldName + "\""));
-        assertTrue(bat.contains("\\" + oldName + "\" >nul"));
+        assertTrue(bat.contains("call :verify_jar \"mods\\" + oldName + "\" " + "a".repeat(128)));
+        assertTrue(bat.contains("move /-Y \"mods\\" + oldName + "\""));
+        assertTrue(bat.contains("\\" + oldName + "\" <nul"));
         assertTrue(bat.contains("\\" + oldName + "\" \"mods\\" + oldName + "\""));
     }
 
@@ -109,6 +111,51 @@ class WindowsBatchIntegrationTest {
         String log = Files.readString(gameDir.resolve("jane/pending/" + ID + "/update.log"));
         assertTrue(log.contains("ROLLBACK START"));
         assertTrue(log.contains("FAILED"));
+    }
+
+    @Test
+    void changedOldJarAfterPlanningIsPreserved() throws Exception {
+        Path mods = Files.createDirectory(gameDir.resolve("mods"));
+        Path old = Files.writeString(mods.resolve("old.jar"), "original");
+        Path stage = Files.createDirectories(gameDir.resolve("jane/staging/" + ID));
+        Path fresh = Files.writeString(stage.resolve("new.jar"), "new");
+        UpdatePlan plan = plan(List.of(new UpdatePlan.Operation("example", UpdatePlan.Kind.REPLACE,
+                "old.jar", Hashing.sha512(old), "new.jar", Hashing.sha512(fresh), Files.size(fresh))));
+        Files.writeString(old, "changed after approval");
+        assertNotEquals(0, run(plan));
+        assertEquals("changed after approval", Files.readString(old));
+        assertFalse(Files.exists(mods.resolve("new.jar")));
+        assertTrue(Files.exists(fresh));
+    }
+
+    @Test
+    void lateDestinationCollisionIsNotOverwritten() throws Exception {
+        Path mods = Files.createDirectory(gameDir.resolve("mods"));
+        Path stage = Files.createDirectories(gameDir.resolve("jane/staging/" + ID));
+        Path fresh = Files.writeString(stage.resolve("new.jar"), "new");
+        UpdatePlan plan = plan(List.of(new UpdatePlan.Operation("example", UpdatePlan.Kind.ADD,
+                null, null, "new.jar", Hashing.sha512(fresh), Files.size(fresh))));
+        Path occupied = Files.writeString(mods.resolve("new.jar"), "someone else's file");
+        assertNotEquals(0, run(plan));
+        assertEquals("someone else's file", Files.readString(occupied));
+        assertTrue(Files.exists(fresh));
+    }
+
+    @Test
+    void laterDestinationCollisionRollsBackOnlyInstalledJar() throws Exception {
+        Path mods = Files.createDirectory(gameDir.resolve("mods"));
+        Path stage = Files.createDirectories(gameDir.resolve("jane/staging/" + ID));
+        Path first = Files.writeString(stage.resolve("first.jar"), "first");
+        Path second = Files.writeString(stage.resolve("second.jar"), "second");
+        UpdatePlan plan = plan(List.of(
+                new UpdatePlan.Operation("first", UpdatePlan.Kind.ADD, null, null,
+                        "first.jar", Hashing.sha512(first), Files.size(first)),
+                new UpdatePlan.Operation("second", UpdatePlan.Kind.ADD, null, null,
+                        "second.jar", Hashing.sha512(second), Files.size(second))));
+        Path occupied = Files.writeString(mods.resolve("second.jar"), "untouched collision");
+        assertNotEquals(0, run(plan));
+        assertFalse(Files.exists(mods.resolve("first.jar")));
+        assertEquals("untouched collision", Files.readString(occupied));
     }
 
     @Test
@@ -225,6 +272,7 @@ class WindowsBatchIntegrationTest {
         boolean done = process.waitFor(30, TimeUnit.SECONDS);
         if (!done) process.destroyForcibly();
         assertTrue(done, "Updater BAT exceeded " + Duration.ofSeconds(30));
+        lastOutput = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
         return process.exitValue();
     }
 }

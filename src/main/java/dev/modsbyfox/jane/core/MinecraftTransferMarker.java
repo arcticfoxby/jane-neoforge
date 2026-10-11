@@ -11,7 +11,11 @@ public final class MinecraftTransferMarker {
     public static final int TRANSPORT_VERSION = 1;
 
     private MinecraftTransferMarker() { }
+    public static boolean matches(String name, UUID profileId) {
+        return PROFILE_NAME.equals(name) && PROFILE_ID.equals(profileId);
+    }
+
     public static boolean matches(String name, Optional<UUID> profileId) {
-        return PROFILE_NAME.equals(name) && profileId.isPresent() && PROFILE_ID.equals(profileId.get());
+        return profileId != null && profileId.isPresent() && matches(name, profileId.get());
     }
 }

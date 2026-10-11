@@ -9,7 +9,7 @@ import net.minecraft.resources.ResourceLocation;
 /** The client's result for the server's required manifest. */
 public record ResultPayload(Status status) implements CustomPacketPayload {
     public enum Status {
-        PASS(0), ACTION_REQUIRED(1), PROTOCOL_ERROR(2);
+        PASS(0), ACTION_REQUIRED(1), PROTOCOL_ERROR(2), USER_OVERRIDE(3);
 
         private final int wireValue;
 
@@ -21,6 +21,7 @@ public record ResultPayload(Status status) implements CustomPacketPayload {
             return switch (value) {
                 case 0 -> PASS;
                 case 1 -> ACTION_REQUIRED;
+                case 3 -> USER_OVERRIDE;
                 default -> PROTOCOL_ERROR;
             };
         }

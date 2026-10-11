@@ -18,7 +18,7 @@ public record ClientCompatibilityReport(List<ExtraMod> explicitClientMods, List<
         public ExtraMod {
             if (!ManifestEntry.validId(modId) || displayName == null || displayName.isBlank()
                     || version == null || version.isBlank() || kind == null || jar == null
-                    || (kind == Kind.EXPLICIT_CLIENT && (sha512 == null || !sha512.matches("[0-9a-f]{128}")))
+                    || (kind == Kind.EXPLICIT_CLIENT && sha512 != null && !sha512.matches("[0-9a-f]{128}"))
                     || (kind == Kind.OTHER_EXTRA && sha512 != null))
                 throw new IllegalArgumentException("Invalid extra mod");
             if (filename == null || filename.isBlank()) throw new IllegalArgumentException("Invalid extra filename");
@@ -40,8 +40,10 @@ public record ClientCompatibilityReport(List<ExtraMod> explicitClientMods, List<
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-512");
             for (ExtraMod mod : explicit.stream().sorted(Comparator.comparing(ExtraMod::modId)
-                    .thenComparing(ExtraMod::version).thenComparing(ExtraMod::sha512)).toList()) {
-                digest.update((mod.modId() + "\0" + mod.version() + "\0" + mod.sha512() + "\n")
+                    .thenComparing(ExtraMod::version)
+                    .thenComparing(ExtraMod::sha512, Comparator.nullsFirst(Comparator.naturalOrder()))).toList()) {
+                digest.update((mod.modId() + "\0" + mod.version() + "\0"
+                        + (mod.sha512() == null ? "unverified" : mod.sha512()) + "\n")
                         .getBytes(StandardCharsets.UTF_8));
             }
             return HexFormat.of().formatHex(digest.digest());

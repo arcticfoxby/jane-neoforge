@@ -1,6 +1,7 @@
 package dev.modsbyfox.jane.neoforge.network;
 
 import dev.modsbyfox.jane.core.ManifestCodec;
+import dev.modsbyfox.jane.core.RequiredManifest;
 import java.io.IOException;
 import java.time.Duration;
 import java.util.Objects;
@@ -23,13 +24,15 @@ import net.minecraft.server.network.ConfigurationTask;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.common.extensions.ICommonPacketListener;
 import net.neoforged.neoforge.network.configuration.ICustomConfigurationTask;
-import net.neoforged.neoforge.network.event.RegisterConfigurationTasksEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 import net.neoforged.neoforge.network.registration.PayloadRegistrar;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Runs Jane's fail-closed requirement check before the player enters the world. */
 public final class JaneConfigurationNetwork {
+    private static final Logger LOGGER = LoggerFactory.getLogger("jane");
     @FunctionalInterface
     public interface ManifestSupplier {
         /** Snapshot platform state on the configuration thread, then prepare hashes asynchronously. */
@@ -55,6 +58,7 @@ public final class JaneConfigurationNetwork {
     private static final Component INVALID_MANIFEST = Component.literal("Jane could not read the server's required mod manifest.");
     private static final Component ACTION_REQUIRED = Component.literal("Jane requires mod changes before joining. Apply them, restart Minecraft, and reconnect.");
     private static final Component PROTOCOL_ERROR = Component.literal("Jane protocol mismatch or invalid configuration data.");
+    private static volatile JaneConfigurationNetwork registeredNetwork;
 
     private final ManifestSupplier manifestSupplier;
     private final ClientEvaluator clientEvaluator;
@@ -81,27 +85,39 @@ public final class JaneConfigurationNetwork {
     public static void register(IEventBus modBus, ManifestSupplier manifestSupplier, ClientEvaluator clientEvaluator) {
         Objects.requireNonNull(modBus, "modBus");
         JaneConfigurationNetwork network = new JaneConfigurationNetwork(manifestSupplier, clientEvaluator);
+        registeredNetwork = network;
         modBus.addListener(network::registerPayloads);
-        modBus.addListener(network::registerTasks);
+    }
+
+    /** Called at the start of 1.21.1 configuration, after channel negotiation but before registry sync. */
+    public static boolean installEarlyTask(ServerConfigurationPacketListener listener,
+            Consumer<ConfigurationTask> registration) {
+        JaneConfigurationNetwork network = registeredNetwork;
+        if (network == null) {
+            listener.disconnect(SERVER_FAILURE);
+            return false;
+        }
+        return network.addEarlyTask(listener, registration);
     }
 
     private void registerPayloads(RegisterPayloadHandlersEvent event) {
         // Optional registration lets this task provide a clear missing-Jane reason after negotiation.
-        PayloadRegistrar registrar = event.registrar("3").optional();
+        PayloadRegistrar registrar = event.registrar(Integer.toString(RequiredManifest.PROTOCOL)).optional();
         registrar.configurationToClient(ManifestPayload.TYPE, ManifestPayload.STREAM_CODEC, this::handleManifest);
         registrar.configurationToServer(ResultPayload.TYPE, ResultPayload.STREAM_CODEC, this::handleResult);
     }
 
-    private void registerTasks(RegisterConfigurationTasksEvent event) {
-        ServerConfigurationPacketListener listener = event.getListener();
+    boolean addEarlyTask(ServerConfigurationPacketListener listener, Consumer<ConfigurationTask> registration) {
         try {
             if (!listener.hasChannel(ManifestPayload.TYPE) || !listener.hasChannel(ResultPayload.TYPE)) {
                 listener.disconnect(MISSING_CLIENT);
-                return;
+                return false;
             }
-            event.register(new ManifestTask(listener));
+            registration.accept(new ManifestTask(listener));
+            return true;
         } catch (RuntimeException exception) {
             listener.disconnect(SERVER_FAILURE);
+            return false;
         }
     }
 
@@ -245,6 +261,11 @@ public final class JaneConfigurationNetwork {
         try {
             switch (payload.status()) {
                 case PASS -> context.finishCurrentTask(TASK_TYPE);
+                case USER_OVERRIDE -> {
+                    LOGGER.warn("Jane configuration result USER_OVERRIDE: required baseline is not satisfied; "
+                            + "player chose to attempt joining without the missing required files");
+                    context.finishCurrentTask(TASK_TYPE);
+                }
                 case ACTION_REQUIRED -> context.disconnect(ACTION_REQUIRED);
                 case PROTOCOL_ERROR -> context.disconnect(PROTOCOL_ERROR);
             }
