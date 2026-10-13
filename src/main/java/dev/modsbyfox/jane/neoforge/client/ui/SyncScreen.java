@@ -585,6 +585,6 @@ final class SyncScreen extends UiScreen {
                 height < 150 ? Math.max(24, height - 90) : height < 180 ? 60 : 64, 0xFFCC77);
         if (ready != null && height >= 180)
             centered(graphics, Component.translatable("jane.sync.confirm_line2"), 78, 0xAAFFAA);
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 }

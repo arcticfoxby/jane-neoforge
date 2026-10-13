@@ -135,7 +135,7 @@ final class CompatibilityReviewScreen extends UiScreen {
                 ? Component.translatable("jane.select.audit_incomplete") : null;
         if (shownNotice != null)
             centered(graphics, shownNotice, compact() ? height - 75 : height - 89, 0xFF7777);
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 
     private void drawRow(GuiGraphics graphics, Row row, int y, int mouseX, int mouseY) {

@@ -43,7 +43,7 @@ final class SyncDetailsScreen extends UiScreen {
             }
             graphics.disableScissor();
         }
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 
     private void drawItem(GuiGraphics graphics, JaneSyncSession.ItemState item, int y) {

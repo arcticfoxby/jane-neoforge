@@ -1,6 +1,7 @@
 package dev.modsbyfox.jane.neoforge.client.ui;
 
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Renderable;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 
@@ -27,6 +28,12 @@ abstract class UiScreen extends Screen {
     }
 
     protected final int buttonWidth() { return Math.max(1, Math.min(240, width - 24)); }
+
+    /** Screen.render draws the background again, so render widgets after Jane's text without reblurring it. */
+    protected final void renderWidgets(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        for (Renderable renderable : renderables)
+            renderable.render(graphics, mouseX, mouseY, partialTick);
+    }
 
     @Override public void onClose() { minecraft.setScreen(parent); }
 }

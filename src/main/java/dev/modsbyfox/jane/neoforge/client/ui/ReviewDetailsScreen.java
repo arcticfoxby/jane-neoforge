@@ -64,7 +64,7 @@ final class ReviewDetailsScreen extends UiScreen {
             }
             graphics.disableScissor();
         }
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {

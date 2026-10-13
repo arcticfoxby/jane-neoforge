@@ -132,7 +132,7 @@ final class RecoveryScreen extends UiScreen {
             centered(graphics, Component.translatable("jane.sync.confirm_line2"), height - 65, 0xBBBBBB);
             centered(graphics, Component.translatable("jane.sync.confirm_line3"), height - 52, 0xBBBBBB);
         } else if (notice != null) centered(graphics, notice, height - 48, 0xFFCC77);
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override public void onClose() {

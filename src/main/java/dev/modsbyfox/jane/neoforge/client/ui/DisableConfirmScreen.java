@@ -34,6 +34,6 @@ final class DisableConfirmScreen extends UiScreen {
         centered(graphics, Component.translatable("jane.compat.confirm_explain"), 45, 0xCCCCCC);
         if (height >= 150)
             centered(graphics, Component.translatable("jane.compat.dependency_warning"), 59, 0xFFCC77);
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 }

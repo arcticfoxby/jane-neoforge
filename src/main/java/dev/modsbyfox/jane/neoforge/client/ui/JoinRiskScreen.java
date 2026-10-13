@@ -125,7 +125,7 @@ final class JoinRiskScreen extends UiScreen {
             graphics.disableScissor();
         }
         if (notice != null) centered(graphics, notice, height - 64, 0xFF7777);
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {

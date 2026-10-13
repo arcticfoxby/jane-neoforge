@@ -98,7 +98,7 @@ final class SyncSelectionScreen extends UiScreen {
             }
             graphics.disableScissor();
         }
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 
     private void drawRow(GuiGraphics graphics, Row row, Layout layout, int y, int mouseX, int mouseY) {

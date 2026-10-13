@@ -103,6 +103,6 @@ final class EnvironmentReviewScreen extends UiScreen {
             centered(graphics, Component.translatable("jane.environment.file_error", localErrors), warningY, 0xFF7777);
         else if (auditSaveFailed && warning)
             centered(graphics, Component.translatable("jane.select.audit_incomplete"), warningY, 0xFF7777);
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 }

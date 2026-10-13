@@ -37,7 +37,7 @@ final class ServerSourceConfirmScreen extends UiScreen {
                 owner.session().context().serverAddress()), 69, 0xBBBBBB);
         centered(graphics, Component.translatable("jane.server_confirm.count", count,
                 String.format(java.util.Locale.ROOT, "%.1f", bytes / 1048576.0)), compact ? 34 : 84, 0xBBBBBB);
-        super.render(graphics, mouseX, mouseY, partialTick);
+        renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override public void onClose() {
