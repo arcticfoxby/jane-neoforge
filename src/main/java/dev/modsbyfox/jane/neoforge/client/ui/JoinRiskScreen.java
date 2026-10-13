@@ -17,12 +17,15 @@ import net.minecraft.util.FormattedCharSequence;
 /** Explicit, single-use confirmation before joining with local differences. */
 final class JoinRiskScreen extends UiScreen {
     private record Line(FormattedCharSequence text, int color) { }
+    private record Risk(Component text, int color) { }
     private final PendingSyncContext context;
     private final ClientCompatibilityReport extras;
     private final SyncSelection selection;
     private final boolean auditSaveFailed;
     private final JaneClientUi.JoinActions actions;
-    private final List<Component> risks;
+    private final List<Risk> risks;
+    private final int unmatchedCount;
+    private final int extraCount;
     private int scroll;
     private boolean joining;
     private boolean auditWarningShown;
@@ -37,20 +40,32 @@ final class JoinRiskScreen extends UiScreen {
         this.selection = selection;
         this.auditSaveFailed = auditSaveFailed;
         this.actions = actions;
-        List<Component> lines = new ArrayList<>();
+        unmatchedCount = (int) context.results().stream()
+                .filter(result -> result.status() != Comparison.Status.OK).count();
+        extraCount = extras.explicitClientMods().size() + extras.otherExtraMods().size();
+        List<Risk> lines = new ArrayList<>();
+        lines.add(new Risk(Component.translatable("jane.direct.required_heading", unmatchedCount), 0x66DDFF));
+        if (unmatchedCount == 0) lines.add(new Risk(Component.translatable("jane.direct.none"), 0xBBBBBB));
         for (Comparison.Result result : context.results()) {
             if (result.status() == Comparison.Status.OK) continue;
-            lines.add(Component.literal(result.required().displayName() + " [" + result.required().modId() + "]"));
-            lines.add(Component.translatable("jane.direct.required_state", result.required().version(),
-                    Component.translatable("jane.status." + result.status().name().toLowerCase(Locale.ROOT))));
+            lines.add(new Risk(Component.literal(result.required().displayName() + " ["
+                    + result.required().modId() + "]"), 0xFFFFFF));
+            lines.add(new Risk(Component.translatable("jane.direct.required_state", result.required().version(),
+                    Component.translatable("jane.status." + result.status().name().toLowerCase(Locale.ROOT))),
+                    0xFFCC77));
         }
+        lines.add(new Risk(null, 0));
+        lines.add(new Risk(Component.translatable("jane.direct.extra_heading", extraCount), 0x66DDFF));
+        if (extraCount == 0) lines.add(new Risk(Component.translatable("jane.direct.none"), 0xBBBBBB));
         for (ClientCompatibilityReport.ExtraMod extra : extras.explicitClientMods()) {
-            lines.add(Component.literal(extra.displayName()));
-            lines.add(Component.translatable("jane.direct.extra_id", extra.modId(), extra.version()));
+            lines.add(new Risk(Component.literal(extra.displayName()), 0xFFFFFF));
+            lines.add(new Risk(Component.translatable("jane.direct.extra_id", extra.modId(), extra.version()),
+                    0xFFCC77));
         }
         for (ClientCompatibilityReport.ExtraMod extra : extras.otherExtraMods()) {
-            lines.add(Component.literal(extra.displayName()));
-            lines.add(Component.translatable("jane.direct.extra_id", extra.modId(), extra.version()));
+            lines.add(new Risk(Component.literal(extra.displayName()), 0xFFFFFF));
+            lines.add(new Risk(Component.translatable("jane.direct.extra_id", extra.modId(), extra.version()),
+                    0xFFCC77));
         }
         risks = List.copyOf(lines);
     }
@@ -67,13 +82,18 @@ final class JoinRiskScreen extends UiScreen {
         List<Line> lines = new ArrayList<>();
         int lineWidth = Math.max(80, width - 42);
         for (int i = 1; i <= 3; i++) {
+            if ((i == 2 && unmatchedCount == 0) || (i == 3 && extraCount == 0)) continue;
             for (FormattedCharSequence text : font.split(Component.translatable("jane.direct.explain" + i), lineWidth))
-                lines.add(new Line(text, i == 2 ? 0xFFCC77 : 0xCCCCCC));
+                lines.add(new Line(text, i == 1 ? 0xCCCCCC : 0xFFCC77));
             lines.add(new Line(null, 0));
         }
-        for (int i = 0; i < risks.size(); i++) {
-            for (FormattedCharSequence text : font.split(risks.get(i), lineWidth))
-                lines.add(new Line(text, (i & 1) == 0 ? 0xDDDDDD : 0xFFCC77));
+        for (Risk risk : risks) {
+            if (risk.text() == null) {
+                lines.add(new Line(null, 0));
+                continue;
+            }
+            for (FormattedCharSequence text : font.split(risk.text(), lineWidth))
+                lines.add(new Line(text, risk.color()));
         }
         return lines;
     }
