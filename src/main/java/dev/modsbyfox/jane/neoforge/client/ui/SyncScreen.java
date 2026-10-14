@@ -583,8 +583,6 @@ final class SyncScreen extends UiScreen {
                 ? Component.translatable("jane.select.audit_incomplete") : null;
         if (shownNotice != null) centered(graphics, shownNotice,
                 height < 150 ? Math.max(24, height - 90) : height < 180 ? 60 : 64, 0xFFCC77);
-        if (ready != null && height >= 180)
-            centered(graphics, Component.translatable("jane.sync.confirm_line2"), 78, 0xAAFFAA);
         renderWidgets(graphics, mouseX, mouseY, partialTick);
     }
 }
