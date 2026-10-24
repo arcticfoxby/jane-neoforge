@@ -70,6 +70,7 @@ final class SyncScreen extends UiScreen {
 
     JaneSyncSession session() { return session; }
     SyncSelection selection() { return selection; }
+    ClientCompatibilityReport extras() { return extras; }
     boolean selectionEditable() { return !busy && !resolving && !session.snapshot().started() && ready == null; }
     boolean trustedEnabled() { return trustedEnabled; }
     boolean serverEnabled() { return serverEnabled; }

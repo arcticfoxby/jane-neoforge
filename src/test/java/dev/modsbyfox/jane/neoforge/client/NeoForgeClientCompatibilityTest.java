@@ -3,6 +3,7 @@ package dev.modsbyfox.jane.neoforge.client;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
+import dev.modsbyfox.jane.core.ClientCompatibilityReport;
 import dev.modsbyfox.jane.core.ManifestEntry;
 import dev.modsbyfox.jane.core.RequiredManifest;
 import dev.modsbyfox.jane.neoforge.ClientRequirementClassifier;
@@ -38,6 +39,28 @@ class NeoForgeClientCompatibilityTest {
     }
 
     @Test
+    void onlyCompleteDedicatedServerEntrypointsGetTheirOwnReadOnlyGroup() {
+        AtomicInteger hashes = new AtomicInteger();
+        var report = NeoForgeClientCompatibility.classify(gameDir, empty(), List.of(
+                jar("dedicated", true, ClientRequirementClassifier.EntrypointSide.DEDICATED_SERVER),
+                jar("incomplete", false, ClientRequirementClassifier.EntrypointSide.DEDICATED_SERVER),
+                jar("mixed", true, ClientRequirementClassifier.EntrypointSide.CLIENT,
+                        ClientRequirementClassifier.EntrypointSide.DEDICATED_SERVER),
+                jar("noentry", true)), path -> {
+                    hashes.incrementAndGet();
+                    return HASH;
+                });
+        assertEquals(0, hashes.get());
+        assertEquals(List.of("dedicated"), report.declaredServerOnlyMods().stream()
+                .map(mod -> mod.modId()).toList());
+        assertEquals(ClientCompatibilityReport.Kind.EXPLICIT_SERVER,
+                report.declaredServerOnlyMods().getFirst().kind());
+        assertNull(report.declaredServerOnlyMods().getFirst().sha512());
+        assertEquals(List.of("incomplete", "mixed", "noentry"), report.unclassifiedExtraMods().stream()
+                .map(mod -> mod.modId()).toList());
+    }
+
+    @Test
     void requiredPhysicalJarIsNotReportedAsExtraAndHashFailureStaysVisible() {
         var manifest = new RequiredManifest(RequiredManifest.PROTOCOL,
                 List.of(new ManifestEntry("needed", "Needed", "1", 3, HASH)));
@@ -51,9 +74,9 @@ class NeoForgeClientCompatibilityTest {
     }
 
     private NeoForgePhysicalDiscovery.PhysicalJar jar(String id, boolean complete,
-            ClientRequirementClassifier.EntrypointSide side) {
+            ClientRequirementClassifier.EntrypointSide... sides) {
         return new NeoForgePhysicalDiscovery.PhysicalJar(gameDir.resolve("mods").resolve(id + ".jar"),
-                List.of(id), id, id, "1", new ClientRequirementClassifier.FmlEvidence(complete, List.of(side)));
+                List.of(id), id, id, "1", new ClientRequirementClassifier.FmlEvidence(complete, List.of(sides)));
     }
 
     private static RequiredManifest empty() {

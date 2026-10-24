@@ -28,7 +28,7 @@ import org.slf4j.LoggerFactory;
 /** Extra client mods are reviewed locally after every server Required file matches. */
 final class CompatibilityReviewScreen extends UiScreen {
     private static final Logger LOGGER = LoggerFactory.getLogger("jane");
-    private record Row(ClientCompatibilityReport.ExtraMod mod, boolean selectable) { }
+    private record Row(Component heading, ClientCompatibilityReport.ExtraMod mod, boolean selectable) { }
 
     private final PendingSyncContext context;
     private final ClientCompatibilityReport extras;
@@ -51,11 +51,18 @@ final class CompatibilityReviewScreen extends UiScreen {
         this.auditWarning = auditSaveFailed;
         this.actions = actions;
         List<Row> all = new ArrayList<>();
-        for (ClientCompatibilityReport.ExtraMod mod : extras.explicitClientMods())
-            all.add(new Row(mod, mod.sha512() != null));
-        for (ClientCompatibilityReport.ExtraMod mod : extras.otherExtraMods())
-            all.add(new Row(mod, false));
+        addGroup(all, "jane.compat.client_group", extras.explicitClientMods(), true);
+        addGroup(all, "jane.compat.server_group", extras.declaredServerOnlyMods(), false);
+        addGroup(all, "jane.compat.other_group", extras.unclassifiedExtraMods(), false);
         rows = List.copyOf(all);
+    }
+
+    private static void addGroup(List<Row> rows, String headingKey,
+                                 List<ClientCompatibilityReport.ExtraMod> mods, boolean selectable) {
+        if (mods.isEmpty()) return;
+        rows.add(new Row(Component.translatable(headingKey, mods.size()), null, false));
+        for (ClientCompatibilityReport.ExtraMod mod : mods)
+            rows.add(new Row(null, mod, selectable && mod.sha512() != null));
     }
 
     @Override protected void init() {
@@ -83,7 +90,8 @@ final class CompatibilityReviewScreen extends UiScreen {
     private int listBottom() { return height - (compact() ? (notice == null && !auditWarning ? 58 : 80) : 83); }
 
     private void directJoin() {
-        audit("USER_SELECT_DIRECT_JOIN", Map.of("extraClientMods", Integer.toString(rows.size())));
+        int extraCount = extras.explicitClientMods().size() + extras.otherExtraMods().size();
+        audit("USER_SELECT_DIRECT_JOIN", Map.of("extraClientMods", Integer.toString(extraCount)));
         minecraft.setScreen(new JoinRiskScreen(this, context, extras,
                 new SyncSelection(context), auditWarning, actions));
     }
@@ -139,6 +147,11 @@ final class CompatibilityReviewScreen extends UiScreen {
     }
 
     private void drawRow(GuiGraphics graphics, Row row, int y, int mouseX, int mouseY) {
+        if (row.heading() != null) {
+            graphics.fill(10, y, width - 10, y + 29, 0xAA223344);
+            graphics.drawString(font, fit(row.heading(), width - 32), 16, y + 10, 0x66DDFF);
+            return;
+        }
         ClientCompatibilityReport.ExtraMod mod = row.mod();
         boolean explicit = mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_CLIENT;
         graphics.fill(10, y, width - 10, y + 29,
@@ -148,12 +161,17 @@ final class CompatibilityReviewScreen extends UiScreen {
         if (row.selectable()) graphics.drawString(font,
                 selectedFiles.contains(mod.filename()) ? "☑" : "☐", 16, y + 10, 0xFFFFFF);
         graphics.drawString(font, fit(mod.displayName(), width - left - 20), left, y + 3, 0xFFFFFF);
-        Component kind = Component.translatable(explicit ? "jane.compat.explicit" : "jane.compat.other");
+        Component kind = Component.translatable(switch (mod.kind()) {
+            case EXPLICIT_CLIENT -> "jane.compat.explicit";
+            case EXPLICIT_SERVER -> "jane.compat.server_only";
+            case OTHER_EXTRA -> "jane.compat.other";
+        });
         String detail = mod.modId() + " · " + mod.version() + " · " + kind.getString();
         if (explicit && !row.selectable())
             detail += " · " + Component.translatable("jane.compat.unverified").getString();
         graphics.drawString(font, fit(detail, width - left - 20), left, y + 17,
-                explicit && !row.selectable() ? 0xFF7777 : explicit ? 0xFFCC77 : 0xBBBBBB);
+                explicit && !row.selectable() ? 0xFF7777 : explicit ? 0xFFCC77
+                        : mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER ? 0x88CCFF : 0xBBBBBB);
     }
 
     @Override public boolean mouseClicked(double mouseX, double mouseY, int button) {
@@ -163,7 +181,7 @@ final class CompatibilityReviewScreen extends UiScreen {
         int index = ((int) mouseY - listTop() + scroll) / 31;
         if (index < 0 || index >= rows.size()) return false;
         Row row = rows.get(index);
-        if (!row.selectable()) return true;
+        if (row.mod() == null || !row.selectable()) return true;
         boolean selected = selectedFiles.add(row.mod().filename());
         if (!selected) selectedFiles.remove(row.mod().filename());
         audit(selected ? "USER_SELECT_EXTRA_DISABLE" : "USER_DESELECT_EXTRA_DISABLE", Map.of(

@@ -43,6 +43,18 @@ class ClientDisablePlanTest {
         assertTrue(Files.exists(game.resolve("mods/required.jar")));
     }
 
+    @Test void dedicatedServerExtraCannotBeAutomaticallyDisabled() throws Exception {
+        Path mods = Files.createDirectories(game.resolve("mods"));
+        Path file = Files.writeString(mods.resolve("serveronly.jar"), "server-only fixture");
+        var dedicated = new ClientCompatibilityReport.ExtraMod("serveronly", "Server Only", "1",
+                "serveronly.jar", null, ClientCompatibilityReport.Kind.EXPLICIT_SERVER, file);
+        var inventory = new ClientCompatibilityReport(List.of(), List.of(dedicated),
+                ClientCompatibilityReport.fingerprint(List.of()));
+        assertThrows(java.io.IOException.class,
+                () -> ClientDisablePlan.prepare(game, SERVER, inventory, List.of(dedicated)));
+        assertTrue(Files.exists(file));
+    }
+
     @Test void changedSelectedHashAndDangerousNamesFailBeforeScript() throws Exception {
         var sodium = mod("sodium.jar", "sodium");
         var inventory = report(sodium);

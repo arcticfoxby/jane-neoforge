@@ -113,6 +113,22 @@ class OneShotPermissionsTest {
         assertFalse(permission.consume(login, SERVER, MANIFEST, report));
     }
 
+    @Test void changingAnExtraToDedicatedServerRequiresAnotherConfirmation() {
+        var extra = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
+                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"));
+        var dedicated = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
+                null, ClientCompatibilityReport.Kind.EXPLICIT_SERVER, Path.of("sample.jar"));
+        var before = new ClientCompatibilityReport(List.of(), List.of(extra),
+                ClientCompatibilityReport.fingerprint(List.of()));
+        var after = new ClientCompatibilityReport(List.of(), List.of(dedicated),
+                ClientCompatibilityReport.fingerprint(List.of()));
+        OneShotExtraJoin permission = new OneShotExtraJoin();
+        Object login = new Object();
+        assertTrue(permission.arm(SERVER, MANIFEST, before));
+        permission.beginConnection(login);
+        assertFalse(permission.consume(login, SERVER, MANIFEST, after));
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.parse("2026-01-01T00:00:00Z");
         void advance(Duration duration) { now = now.plus(duration); }

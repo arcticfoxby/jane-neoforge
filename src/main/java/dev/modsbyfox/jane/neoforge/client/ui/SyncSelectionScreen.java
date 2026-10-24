@@ -1,6 +1,7 @@
 package dev.modsbyfox.jane.neoforge.client.ui;
 
 import dev.modsbyfox.jane.core.ClientInstallCategory;
+import dev.modsbyfox.jane.core.ClientCompatibilityReport;
 import dev.modsbyfox.jane.core.Comparison;
 import dev.modsbyfox.jane.core.ResolutionPlan;
 import dev.modsbyfox.jane.core.SyncSelection;
@@ -27,17 +28,22 @@ final class SyncSelectionScreen extends UiScreen {
     }
 
     private enum Kind { SOURCE_TRUSTED, SOURCE_SERVER, REQUIRED_HEADER, OPTIONAL_HEADER,
-        MATCHED_HEADER, MOD }
-    private record Row(Kind kind, Comparison.Result result, int height) { }
+        MATCHED_HEADER, EXTRA_SERVER_HEADER, EXTRA_SERVER_MOD, MOD }
+    private record Row(Kind kind, Comparison.Result result,
+                       ClientCompatibilityReport.ExtraMod extra, int height) {
+        Row(Kind kind, Comparison.Result result, int height) { this(kind, result, null, height); }
+    }
 
     private final SyncScreen owner;
     private final SyncSelection selection;
+    private final List<ClientCompatibilityReport.ExtraMod> declaredServerOnly;
     private int scroll;
 
     SyncSelectionScreen(SyncScreen owner) {
         super(Component.translatable("jane.select.screen_title"), owner);
         this.owner = owner;
         this.selection = owner.selection();
+        this.declaredServerOnly = owner.extras().declaredServerOnlyMods();
     }
 
     static boolean adjustable(Comparison.Result result, ClientInstallCategory category) {
@@ -49,6 +55,11 @@ final class SyncSelectionScreen extends UiScreen {
         List<Row> rows = new ArrayList<>();
         rows.add(new Row(Kind.SOURCE_TRUSTED, null, 22));
         rows.add(new Row(Kind.SOURCE_SERVER, null, 22));
+        if (!declaredServerOnly.isEmpty()) {
+            rows.add(new Row(Kind.EXTRA_SERVER_HEADER, null, 21));
+            for (ClientCompatibilityReport.ExtraMod extra : declaredServerOnly)
+                rows.add(new Row(Kind.EXTRA_SERVER_MOD, null, extra, 34));
+        }
         rows.add(new Row(Kind.REQUIRED_HEADER, null, 21));
         for (Comparison.Result result : owner.session().context().results())
             if (result.status() != Comparison.Status.OK
@@ -117,14 +128,26 @@ final class SyncSelectionScreen extends UiScreen {
                     left, y + 6, enabled ? 0xFFFFFF : 0x999999);
             return;
         }
+        if (row.kind() == Kind.EXTRA_SERVER_MOD) {
+            ClientCompatibilityReport.ExtraMod extra = row.extra();
+            graphics.drawString(font, fit(extra.displayName(), available), left, y + 2, 0xFFFFFF);
+            Component detail = Component.translatable("jane.select.extra_server_readonly");
+            graphics.drawString(font, fit(extra.modId() + " · " + extra.version() + " · "
+                    + detail.getString(), available), left, y + 17, 0x88CCFF);
+            return;
+        }
         if (row.kind() != Kind.MOD) {
             String key = switch (row.kind()) {
                 case REQUIRED_HEADER -> "jane.select.required_group";
                 case OPTIONAL_HEADER -> "jane.select.optional_group";
                 case MATCHED_HEADER -> "jane.sync.matched_group";
+                case EXTRA_SERVER_HEADER -> "jane.select.extra_server_group";
                 default -> throw new IllegalStateException("Unknown selection row");
             };
-            graphics.drawString(font, fit(Component.translatable(key), available), left, y + 6, 0xFFCC77);
+            Component heading = row.kind() == Kind.EXTRA_SERVER_HEADER
+                    ? Component.translatable(key, declaredServerOnly.size()) : Component.translatable(key);
+            graphics.drawString(font, fit(heading, available), left, y + 6,
+                    row.kind() == Kind.EXTRA_SERVER_HEADER ? 0x66DDFF : 0xFFCC77);
             return;
         }
         Comparison.Result result = row.result();

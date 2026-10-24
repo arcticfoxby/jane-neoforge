@@ -52,6 +52,7 @@ public final class NeoForgeClientCompatibility {
                 continue;
             }
             boolean clientOnly = explicitlyClientOnly(jar.fmlEvidence());
+            boolean serverOnly = explicitlyServerOnly(jar.fmlEvidence());
             String hash = null;
             if (clientOnly) {
                 try {
@@ -65,6 +66,7 @@ public final class NeoForgeClientCompatibility {
             }
             ClientCompatibilityReport.Kind kind = clientOnly
                     ? ClientCompatibilityReport.Kind.EXPLICIT_CLIENT
+                    : serverOnly ? ClientCompatibilityReport.Kind.EXPLICIT_SERVER
                     : ClientCompatibilityReport.Kind.OTHER_EXTRA;
             ClientCompatibilityReport.ExtraMod extra = new ClientCompatibilityReport.ExtraMod(
                     jar.canonicalId(), blankFallback(jar.displayName(), jar.canonicalId()),
@@ -80,6 +82,12 @@ public final class NeoForgeClientCompatibility {
         return evidence.complete() && !evidence.entrypoints().isEmpty()
                 && evidence.entrypoints().stream().allMatch(side ->
                         side == ClientRequirementClassifier.EntrypointSide.CLIENT);
+    }
+
+    static boolean explicitlyServerOnly(ClientRequirementClassifier.FmlEvidence evidence) {
+        return evidence.complete() && !evidence.entrypoints().isEmpty()
+                && evidence.entrypoints().stream().allMatch(side ->
+                        side == ClientRequirementClassifier.EntrypointSide.DEDICATED_SERVER);
     }
 
     private static String blankFallback(String value, String fallback) {
