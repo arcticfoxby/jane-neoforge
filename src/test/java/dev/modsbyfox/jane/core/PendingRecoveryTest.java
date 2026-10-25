@@ -16,6 +16,109 @@ class PendingRecoveryTest {
     private static final String STAMP = "2026-09-18_02-30-15";
 
     @Test
+    void existingPendingCannotChangeApprovedCleanupOrDependencyProof() throws Exception {
+        Files.createDirectory(gameDir.resolve("mods"));
+        UpdatePlan.Operation install = new UpdatePlan.Operation("required", UpdatePlan.Kind.ADD,
+                null, null, "required.jar", "a".repeat(128), 10);
+        ClientDisablePlan.Entry cleanup = new ClientDisablePlan.Entry("serverextra", "Server Extra", "1",
+                "server-extra.jar", "b".repeat(128), ClientCompatibilityReport.Kind.EXPLICIT_SERVER,
+                List.of("serverextra"));
+        ClientDisablePlan.DependencyGuard guard = new ClientDisablePlan.DependencyGuard(
+                "server-extra.jar", cleanup.sha512());
+        UpdatePlan approved = new UpdatePlan(ID, SERVER, STAMP, List.of(install), List.of(cleanup),
+                List.of(guard), "c".repeat(128));
+        Path pending = PendingStore.create(gameDir, approved);
+        byte[] original = Files.readAllBytes(pending.resolve("pending.json"));
+
+        List<UpdatePlan> substitutions = List.of(
+                new UpdatePlan(ID, SERVER, "2026-09-18_02-30-16", List.of(install),
+                        List.of(cleanup), List.of(guard), approved.stagedGraphFingerprint()),
+                new UpdatePlan(ID, SERVER, STAMP, List.of(install),
+                        List.of(new ClientDisablePlan.Entry("serverextra", "Changed name", "1",
+                                cleanup.filename(), cleanup.sha512(), cleanup.kind(), cleanup.containedModIds())),
+                        List.of(guard), approved.stagedGraphFingerprint()),
+                new UpdatePlan(ID, SERVER, STAMP, List.of(install), List.of(cleanup),
+                        List.of(guard, new ClientDisablePlan.DependencyGuard("retained.jar", "d".repeat(128))),
+                        approved.stagedGraphFingerprint()),
+                new UpdatePlan(ID, SERVER, STAMP, List.of(install), List.of(cleanup),
+                        List.of(guard), "e".repeat(128)));
+        for (UpdatePlan substitution : substitutions) {
+            assertThrows(java.io.IOException.class, () -> PendingStore.create(gameDir, substitution));
+            assertArrayEquals(original, Files.readAllBytes(pending.resolve("pending.json")));
+        }
+    }
+
+    @Test
+    void readyInstallOnlyPendingCanBePromotedOnceBeforeUpdaterStarts() throws Exception {
+        Files.createDirectory(gameDir.resolve("mods"));
+        UpdatePlan.Operation install = new UpdatePlan.Operation("required", UpdatePlan.Kind.ADD,
+                null, null, "required.jar", "a".repeat(128), 10);
+        UpdatePlan staged = new UpdatePlan(ID, SERVER, STAMP, List.of(install));
+        Path pending = PendingStore.create(gameDir, staged);
+        ClientDisablePlan.Entry cleanup = new ClientDisablePlan.Entry("serverextra", "Server Extra", "1",
+                "server-extra.jar", "b".repeat(128), ClientCompatibilityReport.Kind.EXPLICIT_SERVER,
+                List.of("serverextra"));
+        ClientDisablePlan.DependencyGuard guard = new ClientDisablePlan.DependencyGuard(
+                cleanup.filename(), cleanup.sha512());
+        UpdatePlan combined = new UpdatePlan(ID, SERVER, STAMP, List.of(install), List.of(cleanup),
+                List.of(guard), "c".repeat(128));
+
+        assertEquals(pending, PendingStore.create(gameDir, combined));
+        assertTrue(Files.readString(pending.resolve("pending.json")).contains("server-extra.jar"));
+        assertThrows(java.io.IOException.class, () -> PendingStore.create(gameDir, staged));
+
+        Path secondGame = Files.createDirectory(gameDir.resolve("other-game"));
+        Files.createDirectory(secondGame.resolve("mods"));
+        Path unstarted = PendingStore.create(secondGame, staged);
+        Files.writeString(unstarted.resolve("update.log"), "updater started");
+        assertThrows(java.io.IOException.class, () -> PendingStore.create(secondGame, staged));
+        assertThrows(java.io.IOException.class, () -> PendingStore.create(secondGame, combined));
+    }
+
+    @Test
+    void launchRejectsNewUnobservedJarAfterCleanupApproval() throws Exception {
+        Path mods = Files.createDirectory(gameDir.resolve("mods"));
+        Path extra = Files.writeString(mods.resolve("server-extra.jar"), "extra");
+        String hash = Hashing.sha512(extra);
+        ClientDisablePlan.Entry cleanup = new ClientDisablePlan.Entry("serverextra", "Server Extra", "1",
+                "server-extra.jar", hash, ClientCompatibilityReport.Kind.EXPLICIT_SERVER,
+                List.of("serverextra"));
+        UpdatePlan plan = new UpdatePlan(ID, SERVER, STAMP, List.of(), List.of(cleanup),
+                List.of(new ClientDisablePlan.DependencyGuard("server-extra.jar", hash)), null);
+        PendingStore.create(gameDir, plan);
+        assertDoesNotThrow(() -> PendingRecovery.verifyForLaunch(gameDir, plan));
+
+        Files.writeString(mods.resolve("unknown.jar"), "new owner");
+        assertThrows(java.io.IOException.class, () -> PendingRecovery.verifyForLaunch(gameDir, plan));
+        assertEquals("extra", Files.readString(extra));
+    }
+
+    @Test
+    void explicitRetryCanChangeOnlyTimestampOfUncompletedCleanup() throws Exception {
+        Path mods = Files.createDirectory(gameDir.resolve("mods"));
+        Path extra = Files.writeString(mods.resolve("server-extra.jar"), "extra");
+        String hash = Hashing.sha512(extra);
+        ClientDisablePlan.Entry cleanup = new ClientDisablePlan.Entry("serverextra", "Server Extra", "1",
+                "server-extra.jar", hash, ClientCompatibilityReport.Kind.EXPLICIT_SERVER,
+                List.of("serverextra"));
+        UpdatePlan original = new UpdatePlan(ID, SERVER, STAMP, List.of(), List.of(cleanup),
+                List.of(new ClientDisablePlan.DependencyGuard("server-extra.jar", hash)), null);
+        Path pending = PendingStore.create(gameDir, original);
+        Files.writeString(pending.resolve("failed.marker"), "FAILED");
+        PendingRecovery.Item item = PendingRecovery.scan(gameDir).get(0);
+        assertTrue(item.failed());
+        assertThrows(java.io.IOException.class, () -> PendingStore.create(gameDir, original));
+
+        UpdatePlan retry = PendingRecovery.prepareRetry(gameDir, item);
+        assertNotEquals(original.timestamp(), retry.timestamp());
+        assertEquals(original.cleanupEntries(), retry.cleanupEntries());
+        assertEquals(original.dependencyGuards(), retry.dependencyGuards());
+        assertFalse(Files.exists(pending.resolve("failed.marker")));
+        assertDoesNotThrow(() -> PendingRecovery.verifyForLaunch(gameDir, retry));
+        assertThrows(java.io.IOException.class, () -> PendingStore.create(gameDir, original));
+    }
+
+    @Test
     void incompletePendingRequiresExplicitRetryAndReverification() throws Exception {
         Files.createDirectory(gameDir.resolve("mods"));
         Path stage = PathSafety.janeDirectory(gameDir, "staging", ID);

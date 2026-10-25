@@ -6,13 +6,17 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.modsbyfox.jane.core.ClientCleanupGraph;
 import java.io.IOException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.fml.loading.modscan.ModAnnotation;
+import net.neoforged.neoforgespi.language.IModInfo;
+import org.apache.maven.artifact.versioning.VersionRange;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.objectweb.asm.Type;
@@ -146,6 +150,33 @@ class NeoForgePhysicalDiscoveryTest {
     }
 
     @Test
+    void resolvedFmlDependenciesRetainOwnerTypeSideAndVersionRange() throws Exception {
+        VersionRange range = VersionRange.createFromVersionSpec("[1,2)");
+        IModInfo.ModVersion required = dependency("target", IModInfo.DependencyType.REQUIRED,
+                IModInfo.DependencySide.CLIENT, range);
+        IModInfo.ModVersion optional = dependency("other", IModInfo.DependencyType.OPTIONAL,
+                IModInfo.DependencySide.SERVER, range);
+        IModInfo owner = (IModInfo) Proxy.newProxyInstance(IModInfo.class.getClassLoader(),
+                new Class<?>[] { IModInfo.class }, (proxy, method, args) -> switch (method.getName()) {
+                    case "getModId" -> "owner";
+                    case "getDependencies" -> List.of(required, optional);
+                    default -> null;
+                });
+        var facts = NeoForgePhysicalDiscovery.readDependencies(owner);
+
+        assertTrue(facts.complete());
+        assertEquals(2, facts.dependencies().size());
+        assertEquals(new ClientCleanupGraph.Dependency("owner", "target",
+                        ClientCleanupGraph.DependencyType.REQUIRED,
+                        ClientCleanupGraph.DependencySide.CLIENT, "[1,2)"),
+                facts.dependencies().getFirst());
+        assertEquals(ClientCleanupGraph.DependencyType.OPTIONAL,
+                facts.dependencies().get(1).type());
+        assertEquals(ClientCleanupGraph.DependencySide.SERVER,
+                facts.dependencies().get(1).side());
+    }
+
+    @Test
     void rejectsUnsafeDirectJarName() throws IOException {
         Path mods = Files.createDirectory(gameDir.resolve("mods"));
         Path jar = Files.createFile(mods.resolve("bad%.jar"));
@@ -170,6 +201,18 @@ class NeoForgePhysicalDiscoveryTest {
 
     private static NeoForgePhysicalDiscovery.LoadedMod mod(String id, String name, String version) {
         return new NeoForgePhysicalDiscovery.LoadedMod(id, name, version);
+    }
+
+    private static IModInfo.ModVersion dependency(String target, IModInfo.DependencyType type,
+            IModInfo.DependencySide side, VersionRange range) {
+        return (IModInfo.ModVersion) Proxy.newProxyInstance(IModInfo.ModVersion.class.getClassLoader(),
+                new Class<?>[] { IModInfo.ModVersion.class }, (proxy, method, args) -> switch (method.getName()) {
+                    case "getModId" -> target;
+                    case "getType" -> type;
+                    case "getSide" -> side;
+                    case "getVersionRange" -> range;
+                    default -> null;
+                });
     }
 
     private static NeoForgePhysicalDiscovery.Entrypoint entry(

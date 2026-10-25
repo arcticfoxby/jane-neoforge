@@ -62,17 +62,53 @@ public final class PendingRecovery {
     public static UpdatePlan prepareRetry(Path gameDir, Item item) throws IOException {
         if (item.plan() == null) throw new IOException("Pending metadata cannot be read");
         UpdatePlan old = item.plan();
-        verifyForLaunch(gameDir, old);
+        verifySourceFiles(gameDir, old);
         String timestamp = BackupTimestamp.next(gameDir, old.serverId());
-        UpdatePlan retry = new UpdatePlan(old.syncId(), old.serverId(), timestamp, old.operations());
-        PendingStore.create(gameDir, retry);
+        UpdatePlan retry = new UpdatePlan(old.syncId(), old.serverId(), timestamp,
+                old.operations(), old.cleanupEntries(), old.dependencyGuards(),
+                old.stagedGraphFingerprint());
+        PendingStore.createRetry(gameDir, old, retry);
         Path pending = PathSafety.janeDirectory(gameDir, "pending", old.syncId());
+        verifyForLaunch(gameDir, retry);
         Files.deleteIfExists(pending.resolve("failed.marker"));
         return retry;
     }
 
     public static void verifyForLaunch(Path gameDir, UpdatePlan plan) throws IOException {
-        Path staging = PathSafety.janeDirectory(gameDir, "staging", plan.syncId());
+        Path pending = PathSafety.janeDirectory(gameDir, "pending", plan.syncId());
+        if (!plan.equals(read(pending.resolve("pending.json"))))
+            throw new IOException("Pending plan changed after confirmation");
+        Path script = pending.resolve("update.bat");
+        PathSafety.rejectReparsePoint(script);
+        if (!Files.isRegularFile(script, LinkOption.NOFOLLOW_LINKS)
+                || !Files.readString(script, StandardCharsets.UTF_8)
+                .equals(WindowsBatch.generate(plan, ProcessHandle.current().pid())))
+            throw new IOException("Pending updater script changed after confirmation");
+        verifySourceFiles(gameDir, plan);
+        if (!plan.cleanupEntries().isEmpty()) {
+            Path disabled = PathSafety.janeDirectory(gameDir, "disabled", plan.serverId())
+                    .resolve(plan.timestamp());
+            if (Files.exists(disabled, LinkOption.NOFOLLOW_LINKS))
+                throw new IOException("Client cleanup backup target already exists");
+            verifyCleanupMetadata(pending.resolve("disabled.json"), plan);
+        }
+    }
+
+    private static void verifySourceFiles(Path gameDir, UpdatePlan plan) throws IOException {
+        if (!plan.dependencyGuards().isEmpty()) {
+            java.util.Set<String> guarded = plan.dependencyGuards().stream()
+                    .map(ClientDisablePlan.DependencyGuard::filename)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!PathSafety.topLevelJarNames(gameDir).equals(guarded))
+                throw new IOException("Current mods JAR inventory differs from approved dependency snapshot");
+        }
+        for (ClientDisablePlan.DependencyGuard guard : plan.dependencyGuards()) {
+            Path source = PathSafety.existingJarNamedInMods(gameDir, guard.filename());
+            if (!Hashing.sha512(source).equals(guard.sha512()))
+                throw new IOException("A client dependency JAR changed after confirmation");
+        }
+        Path staging = plan.operations().isEmpty() ? null
+                : PathSafety.janeDirectory(gameDir, "staging", plan.syncId());
         for (UpdatePlan.Operation op : plan.operations()) {
             Path source = staging.resolve(op.newFile());
             if (!Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS) || Files.size(source) != op.size()
@@ -89,6 +125,13 @@ public final class PendingRecovery {
                 throw new IOException("A new JAR path is already occupied");
             }
         }
+        if (!plan.cleanupEntries().isEmpty()) {
+            for (ClientDisablePlan.Entry entry : plan.cleanupEntries()) {
+                Path source = PathSafety.existingJarNamedInMods(gameDir, entry.filename());
+                if (!Hashing.sha512(source).equals(entry.sha512()))
+                    throw new IOException("Client cleanup JAR changed after confirmation");
+            }
+        }
     }
 
     public static void abandon(Path gameDir, Item item) throws IOException {
@@ -99,7 +142,8 @@ public final class PendingRecovery {
     }
 
     private static UpdatePlan read(Path file) throws IOException {
-        if (Files.isSymbolicLink(file) || !Files.isRegularFile(file) || Files.size(file) > 128 * 1024) {
+        PathSafety.rejectReparsePoint(file);
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.size(file) > 128 * 1024) {
             throw new IOException("Invalid pending metadata");
         }
         try {
@@ -114,8 +158,22 @@ public final class PendingRecovery {
                         UpdatePlan.Kind.valueOf(op.get("operation").getAsString()), oldFile, oldHash,
                         op.get("newFile").getAsString(), op.get("expectedSha512").getAsString(), op.get("size").getAsLong()));
             }
+            List<ClientDisablePlan.Entry> cleanup = new ArrayList<>();
+            JsonArray cleanupArray = json.getAsJsonArray("cleanupEntries");
+            if (cleanupArray != null) for (JsonElement element : cleanupArray) {
+                cleanup.add(readCleanupEntry(element.getAsJsonObject()));
+            }
+            List<ClientDisablePlan.DependencyGuard> guards = new ArrayList<>();
+            JsonArray guardArray = json.getAsJsonArray("dependencyGuards");
+            if (guardArray != null) for (JsonElement element : guardArray) {
+                JsonObject guard = element.getAsJsonObject();
+                guards.add(new ClientDisablePlan.DependencyGuard(guard.get("filename").getAsString(),
+                        guard.get("sha512").getAsString()));
+            }
             return new UpdatePlan(json.get("syncId").getAsString(), json.get("serverId").getAsString(),
-                    json.get("backupTimestamp").getAsString(), operations);
+                    json.get("backupTimestamp").getAsString(), operations, cleanup, guards,
+                    json.has("stagedGraphFingerprint")
+                            ? json.get("stagedGraphFingerprint").getAsString() : null);
         } catch (RuntimeException exception) {
             throw new IOException("Corrupt pending metadata", exception);
         }
@@ -126,6 +184,21 @@ public final class PendingRecovery {
             Path installed = PathSafety.newJarInMods(gameDir, op.newFile());
             if (!Files.isRegularFile(installed, LinkOption.NOFOLLOW_LINKS) || Files.size(installed) != op.size()
                     || !Hashing.sha512(installed).equals(op.newHash())) throw new IOException("Installed JAR verification failed");
+        }
+        if (!plan.cleanupEntries().isEmpty()) {
+            Path disabled = PathSafety.janeDirectory(gameDir, "disabled", plan.serverId(), plan.timestamp());
+            verifyCleanupMetadata(disabled.resolve("disabled.json"), plan);
+            if (!Files.isRegularFile(disabled.resolve("success.marker"), LinkOption.NOFOLLOW_LINKS)
+                    || !Files.isRegularFile(disabled.resolve("disable.log"), LinkOption.NOFOLLOW_LINKS))
+                throw new IOException("Client cleanup record is incomplete");
+            for (ClientDisablePlan.Entry entry : plan.cleanupEntries()) {
+                Path saved = PathSafety.existingJarChild(disabled, entry.filename());
+                PathSafety.rejectReparsePoint(saved);
+                if (!Files.isRegularFile(saved, LinkOption.NOFOLLOW_LINKS)
+                        || !Hashing.sha512(saved).equals(entry.sha512())
+                        || Files.exists(gameDir.resolve("mods").resolve(entry.filename()), LinkOption.NOFOLLOW_LINKS))
+                    throw new IOException("Client cleanup backup verification failed");
+            }
         }
         Path backup = PathSafety.janeDirectory(gameDir, "backups", plan.serverId(), plan.timestamp());
         if (!Files.isRegularFile(backup.resolve("backup.json"), LinkOption.NOFOLLOW_LINKS)) {
@@ -146,9 +219,57 @@ public final class PendingRecovery {
             throw new IOException("Unsafe backup success marker");
         Files.writeString(marker, "SUCCESS\n", StandardCharsets.UTF_8);
         prune(gameDir, plan.serverId());
-        Path staging = PathSafety.janeDirectory(gameDir, "staging").resolve(plan.syncId());
-        if (Files.exists(staging, LinkOption.NOFOLLOW_LINKS)) deleteTree(staging);
+        if (!plan.operations().isEmpty()) {
+            Path staging = PathSafety.janeDirectory(gameDir, "staging").resolve(plan.syncId());
+            if (Files.exists(staging, LinkOption.NOFOLLOW_LINKS)) deleteTree(staging);
+        }
         deleteTree(PathSafety.janeDirectory(gameDir, "pending", plan.syncId()));
+    }
+
+    private static void verifyCleanupMetadata(Path file, UpdatePlan plan) throws IOException {
+        PathSafety.rejectReparsePoint(file);
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) || Files.size(file) > 128 * 1024)
+            throw new IOException("Invalid client cleanup metadata");
+        try {
+            JsonObject json = JsonParser.parseString(Files.readString(file, StandardCharsets.UTF_8)).getAsJsonObject();
+            if (!plan.serverId().equals(json.get("serverId").getAsString())
+                    || !plan.timestamp().equals(json.get("timestamp").getAsString()))
+                throw new IOException("Client cleanup identity mismatch");
+            List<ClientDisablePlan.Entry> entries = new ArrayList<>();
+            for (JsonElement element : json.getAsJsonArray("entries")) {
+                entries.add(readCleanupEntry(element.getAsJsonObject()));
+            }
+            if (!plan.cleanupEntries().equals(entries)) throw new IOException("Client cleanup selection changed");
+            List<ClientDisablePlan.DependencyGuard> guards = new ArrayList<>();
+            JsonArray guardArray = json.getAsJsonArray("dependencyGuards");
+            if (guardArray != null) for (JsonElement element : guardArray) {
+                JsonObject guard = element.getAsJsonObject();
+                guards.add(new ClientDisablePlan.DependencyGuard(guard.get("filename").getAsString(),
+                        guard.get("sha512").getAsString()));
+            }
+            if (!plan.dependencyGuards().equals(guards))
+                throw new IOException("Client dependency snapshot changed");
+            String stagedFingerprint = json.has("stagedGraphFingerprint")
+                    ? json.get("stagedGraphFingerprint").getAsString() : null;
+            if (!java.util.Objects.equals(plan.stagedGraphFingerprint(), stagedFingerprint))
+                throw new IOException("Staged dependency proof changed");
+        } catch (RuntimeException exception) {
+            throw new IOException("Invalid client cleanup metadata", exception);
+        }
+    }
+
+    private static ClientDisablePlan.Entry readCleanupEntry(JsonObject json) {
+        String modId = json.get("modId").getAsString();
+        ClientCompatibilityReport.Kind kind = json.has("kind")
+                ? ClientCompatibilityReport.Kind.valueOf(json.get("kind").getAsString())
+                : ClientCompatibilityReport.Kind.EXPLICIT_CLIENT;
+        JsonArray ids = json.getAsJsonArray("containedModIds");
+        List<String> contained = new ArrayList<>();
+        if (ids == null) contained.add(modId);
+        else for (JsonElement id : ids) contained.add(id.getAsString());
+        return new ClientDisablePlan.Entry(modId, json.get("displayName").getAsString(),
+                json.get("version").getAsString(), json.get("filename").getAsString(),
+                json.get("sha512").getAsString(), kind, contained);
     }
 
     /** Keep the updater's original bounded log before verified pending files are removed. */

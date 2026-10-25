@@ -129,6 +129,23 @@ class OneShotPermissionsTest {
         assertFalse(permission.consume(login, SERVER, MANIFEST, after));
     }
 
+    @Test void changingContainedIdsRequiresAnotherExtraJoinConfirmation() {
+        var oneId = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
+                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"));
+        var twoIds = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
+                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"),
+                List.of("sample", "helper"), false, null);
+        var before = new ClientCompatibilityReport(List.of(), List.of(oneId),
+                ClientCompatibilityReport.fingerprint(List.of()));
+        var after = new ClientCompatibilityReport(List.of(), List.of(twoIds),
+                ClientCompatibilityReport.fingerprint(List.of()));
+        OneShotExtraJoin permission = new OneShotExtraJoin();
+        Object login = new Object();
+        assertTrue(permission.arm(SERVER, MANIFEST, before));
+        permission.beginConnection(login);
+        assertFalse(permission.consume(login, SERVER, MANIFEST, after));
+    }
+
     private static final class MutableClock extends Clock {
         private Instant now = Instant.parse("2026-01-01T00:00:00Z");
         void advance(Duration duration) { now = now.plus(duration); }

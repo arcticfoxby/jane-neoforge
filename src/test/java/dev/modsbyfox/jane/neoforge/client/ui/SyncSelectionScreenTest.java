@@ -1,6 +1,7 @@
 package dev.modsbyfox.jane.neoforge.client.ui;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.modsbyfox.jane.core.ClientInstallCategory;
@@ -40,6 +41,9 @@ class SyncSelectionScreenTest {
             assertTrue(layout.declarationBottom() < layout.listTop());
             assertTrue(layout.listTop() < layout.listBottom());
             assertTrue(layout.listBottom() <= size[1] - 24);
+            assertEquals(0, layout.maxScroll(0));
+            assertTrue(layout.maxScroll(22 + 22 + 21 + 20 * 50) > 0,
+                    "Twenty cleanup rows must remain reachable by scrolling");
         }
     }
 }

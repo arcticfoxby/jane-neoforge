@@ -21,7 +21,7 @@ final class DisableConfirmScreen extends UiScreen {
         int x = (width - w) / 2;
         addRenderableWidget(Button.builder(Component.translatable("jane.compat.confirm_disable"), button -> {
             minecraft.setScreen(review);
-            review.disableSelected();
+            review.openFinalConfirmation();
         }).bounds(x, height - 52, w, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.back"), button -> onClose())
                 .bounds(x, height - 28, w, 20).build());

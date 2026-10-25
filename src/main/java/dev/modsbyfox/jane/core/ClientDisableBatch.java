@@ -14,6 +14,8 @@ public final class ClientDisableBatch {
     private ClientDisableBatch() { }
 
     public static Path write(Path gameDir, ClientDisablePlan plan, long pid) throws IOException {
+        if (plan.entries().stream().anyMatch(entry -> entry.kind() != ClientCompatibilityReport.Kind.EXPLICIT_CLIENT))
+            throw new IOException("Server-entry cleanup requires the verified unified updater");
         Path parent = PathSafety.janeDirectory(gameDir, "disabled", plan.serverId());
         Path destination = parent.resolve(plan.timestamp());
         if (Files.exists(destination, LinkOption.NOFOLLOW_LINKS)) throw new IOException("Disable target already exists");
@@ -30,6 +32,10 @@ public final class ClientDisableBatch {
             item.addProperty("version", entry.version());
             item.addProperty("filename", entry.filename());
             item.addProperty("sha512", entry.sha512());
+            item.addProperty("kind", entry.kind().name());
+            JsonArray containedModIds = new JsonArray();
+            entry.containedModIds().forEach(containedModIds::add);
+            item.add("containedModIds", containedModIds);
             entries.add(item);
         }
         json.add("entries", entries);

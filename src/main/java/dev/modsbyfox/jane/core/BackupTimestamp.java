@@ -12,12 +12,17 @@ public final class BackupTimestamp {
     private BackupTimestamp() { }
 
     public static String next(Path gameDir, String serverId) throws IOException {
+        return next(gameDir, serverId, LocalDateTime.now());
+    }
+
+    static String next(Path gameDir, String serverId, LocalDateTime now) throws IOException {
         if (serverId == null || !serverId.matches("[0-9a-f]{64}")) throw new IOException("Invalid server ID");
         Path parent = PathSafety.janeDirectory(gameDir, "backups", serverId);
-        LocalDateTime now = LocalDateTime.now();
+        Path disabled = PathSafety.janeDirectoryPath(gameDir, "disabled", serverId);
         for (int i = 0; i < 60; i++) {
             String stamp = now.plusSeconds(i).format(FORMAT);
-            if (!Files.exists(parent.resolve(stamp), LinkOption.NOFOLLOW_LINKS)) return stamp;
+            if (!Files.exists(parent.resolve(stamp), LinkOption.NOFOLLOW_LINKS)
+                    && !Files.exists(disabled.resolve(stamp), LinkOption.NOFOLLOW_LINKS)) return stamp;
         }
         throw new IOException("No free backup timestamp");
     }

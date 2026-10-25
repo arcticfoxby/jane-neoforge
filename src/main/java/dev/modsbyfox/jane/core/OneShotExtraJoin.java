@@ -63,6 +63,7 @@ public final class OneShotExtraJoin {
         for (var mod : report.explicitClientMods()) append(data, mod);
         data.append('|');
         for (var mod : report.otherExtraMods()) append(data, mod);
+        data.append('|').append(report.cleanupGraph().fingerprint());
         return Hashing.sha256(data.toString());
     }
 
@@ -77,5 +78,7 @@ public final class OneShotExtraJoin {
             if (field == null) data.append("-1:");
             else data.append(field.length()).append(':').append(field);
         }
+        for (String id : mod.containedModIds().stream().sorted().toList())
+            data.append(id.length()).append(':').append(id);
     }
 }

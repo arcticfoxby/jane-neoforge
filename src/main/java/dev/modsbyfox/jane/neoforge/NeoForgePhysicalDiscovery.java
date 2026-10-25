@@ -1,6 +1,7 @@
 package dev.modsbyfox.jane.neoforge;
 
 import dev.modsbyfox.jane.core.PathSafety;
+import dev.modsbyfox.jane.core.ClientCleanupGraph;
 import java.io.IOException;
 import java.lang.annotation.ElementType;
 import java.nio.file.Path;
@@ -41,7 +42,9 @@ public final class NeoForgePhysicalDiscovery {
     public record PhysicalJar(Path jar, List<String> modIds, String canonicalId,
                               String displayName, String version,
                               ClientRequirementClassifier.FmlEvidence fmlEvidence,
-                              List<String> dependencyDescriptions) {
+                              List<String> dependencyDescriptions,
+                              List<ClientCleanupGraph.Dependency> dependencies,
+                              boolean dependencyMetadataComplete) {
         public PhysicalJar {
             Objects.requireNonNull(jar, "jar");
             modIds = List.copyOf(Objects.requireNonNull(modIds, "modIds"));
@@ -51,6 +54,15 @@ public final class NeoForgePhysicalDiscovery {
             Objects.requireNonNull(fmlEvidence, "fmlEvidence");
             dependencyDescriptions = List.copyOf(Objects.requireNonNull(
                     dependencyDescriptions, "dependencyDescriptions"));
+            dependencies = List.copyOf(Objects.requireNonNull(dependencies, "dependencies"));
+        }
+
+        public PhysicalJar(Path jar, List<String> modIds, String canonicalId,
+                           String displayName, String version,
+                           ClientRequirementClassifier.FmlEvidence fmlEvidence,
+                           List<String> dependencyDescriptions) {
+            this(jar, modIds, canonicalId, displayName, version, fmlEvidence,
+                    dependencyDescriptions, List.of(), false);
         }
 
         public PhysicalJar(Path jar, List<String> modIds, String canonicalId,
@@ -76,28 +88,11 @@ public final class NeoForgePhysicalDiscovery {
             boolean scanComplete = true;
             List<LoadedMod> mods = new ArrayList<>();
             for (IModInfo mod : info.getMods()) {
-                List<String> dependencies = new ArrayList<>();
-                if (mod.getDependencies() == null) {
-                    scanComplete = false;
-                } else {
-                    for (IModInfo.ModVersion dependency : mod.getDependencies()) {
-                        if (dependency == null || dependency.getModId() == null
-                                || dependency.getType() == null || dependency.getSide() == null
-                                || dependencies.size() >= MAX_DEPENDENCY_NOTES) {
-                            scanComplete = false;
-                            continue;
-                        }
-                        String note = "owner=" + mod.getModId() + " target=" + dependency.getModId()
-                                + " type=" + dependency.getType() + " targetSide=" + dependency.getSide();
-                        if (note.length() > 512) {
-                            scanComplete = false;
-                            continue;
-                        }
-                        dependencies.add(note);
-                    }
-                }
+                DependencyFacts dependencies = readDependencies(mod);
+                scanComplete &= dependencies.complete();
                 mods.add(new LoadedMod(mod.getModId(), mod.getDisplayName(),
-                        mod.getVersion().toString(), dependencies));
+                        mod.getVersion().toString(), dependencies.descriptions(),
+                        dependencies.dependencies(), dependencies.complete()));
             }
             scanComplete &= info.getMods().stream().allMatch(mod ->
                     mod.getLoader() != null && "javafml".equals(mod.getLoader().name()));
@@ -122,6 +117,66 @@ public final class NeoForgePhysicalDiscovery {
                     mods, entrypoints, scanComplete));
         }
         return fromLoadedFiles(gameDir, files);
+    }
+
+    /** FML's resolved dependency type, physical side and range, with no TOML re-parsing. */
+    static DependencyFacts readDependencies(IModInfo mod) {
+        List<String> descriptions = new ArrayList<>();
+        List<ClientCleanupGraph.Dependency> dependencies = new ArrayList<>();
+        if (mod == null) {
+            return new DependencyFacts(List.of(), List.of(), false);
+        }
+        String ownerId;
+        List<? extends IModInfo.ModVersion> resolved;
+        try {
+            ownerId = mod.getModId();
+            resolved = mod.getDependencies();
+        } catch (RuntimeException malformed) {
+            return new DependencyFacts(List.of(), List.of(), false);
+        }
+        if (!ClientCleanupGraph.validModId(ownerId) || resolved == null)
+            return new DependencyFacts(List.of(), List.of(), false);
+        boolean complete = true;
+        for (IModInfo.ModVersion dependency : resolved) {
+            if (dependency == null || descriptions.size() >= MAX_DEPENDENCY_NOTES) {
+                complete = false;
+                continue;
+            }
+            try {
+                String targetId = dependency.getModId();
+                IModInfo.DependencyType type = dependency.getType();
+                IModInfo.DependencySide side = dependency.getSide();
+                var range = dependency.getVersionRange();
+                String rangeText = range == null ? null : range.toString();
+                if (!ClientCleanupGraph.validModId(targetId) || type == null
+                        || side == null || rangeText == null || rangeText.length() > 512) {
+                    complete = false;
+                    continue;
+                }
+                String note = "owner=" + ownerId + " target=" + targetId
+                        + " type=" + type + " targetSide=" + side;
+                if (note.length() > 512) {
+                    complete = false;
+                    continue;
+                }
+                descriptions.add(note);
+                dependencies.add(new ClientCleanupGraph.Dependency(ownerId, targetId,
+                        ClientCleanupGraph.DependencyType.valueOf(type.name()),
+                        ClientCleanupGraph.DependencySide.valueOf(side.name()),
+                        rangeText));
+            } catch (RuntimeException malformed) {
+                complete = false;
+            }
+        }
+        return new DependencyFacts(descriptions, dependencies, complete);
+    }
+
+    record DependencyFacts(List<String> descriptions,
+                           List<ClientCleanupGraph.Dependency> dependencies, boolean complete) {
+        DependencyFacts {
+            descriptions = List.copyOf(descriptions);
+            dependencies = List.copyOf(dependencies);
+        }
     }
 
     /** Follow FML's parent relationship, including a top-level library with no own mod ID. */
@@ -215,13 +270,21 @@ public final class NeoForgePhysicalDiscovery {
     }
 
     record LoadedMod(String modId, String displayName, String version,
-                     List<String> dependencyDescriptions) {
+                     List<String> dependencyDescriptions,
+                     List<ClientCleanupGraph.Dependency> dependencies,
+                     boolean dependencyMetadataComplete) {
         LoadedMod {
             dependencyDescriptions = List.copyOf(dependencyDescriptions);
+            dependencies = List.copyOf(dependencies);
+        }
+
+        LoadedMod(String modId, String displayName, String version,
+                  List<String> dependencyDescriptions) {
+            this(modId, displayName, version, dependencyDescriptions, List.of(), false);
         }
 
         LoadedMod(String modId, String displayName, String version) {
-            this(modId, displayName, version, List.of());
+            this(modId, displayName, version, List.of(), List.of(), true);
         }
     }
 
@@ -245,6 +308,8 @@ public final class NeoForgePhysicalDiscovery {
         private final Map<String, LoadedMod> mods = new TreeMap<>();
         private final List<Entrypoint> entrypoints = new ArrayList<>();
         private final List<String> dependencyDescriptions = new ArrayList<>();
+        private final List<ClientCleanupGraph.Dependency> dependencies = new ArrayList<>();
+        private boolean dependencyMetadataComplete = true;
         private boolean scanComplete = true;
 
         private JarBuilder(Path jar) {
@@ -257,19 +322,29 @@ public final class NeoForgePhysicalDiscovery {
             // entrypoints alone must not automatically exclude this container.
             if (file.nested()) scanComplete = false;
             for (LoadedMod mod : file.mods()) {
+                dependencyMetadataComplete &= mod.dependencyMetadataComplete();
+                scanComplete &= mod.dependencyMetadataComplete();
                 if (mod.modId() == null || mod.modId().isBlank()) {
                     throw new IOException("FML returned a mod without an ID");
                 }
                 LoadedMod previous = mods.putIfAbsent(mod.modId(), mod);
                 if (previous != null && (!Objects.equals(previous.displayName(), mod.displayName())
                         || !Objects.equals(previous.version(), mod.version())
-                        || !Objects.equals(previous.dependencyDescriptions(), mod.dependencyDescriptions()))) {
+                        || !Objects.equals(previous.dependencyDescriptions(), mod.dependencyDescriptions())
+                        || !Objects.equals(previous.dependencies(), mod.dependencies())
+                        || previous.dependencyMetadataComplete() != mod.dependencyMetadataComplete())) {
                     throw new IOException("FML returned conflicting metadata for one physical JAR");
                 }
                 if (previous == null) {
+                    if (dependencies.size() > MAX_DEPENDENCY_NOTES - mod.dependencies().size()) {
+                        dependencyMetadataComplete = false;
+                    } else {
+                        dependencies.addAll(mod.dependencies());
+                    }
                     for (String description : mod.dependencyDescriptions()) {
                         if (dependencyDescriptions.size() >= MAX_DEPENDENCY_NOTES) {
                             scanComplete = false;
+                            dependencyMetadataComplete = false;
                             break;
                         }
                         dependencyDescriptions.add(description);
@@ -307,7 +382,7 @@ public final class NeoForgePhysicalDiscovery {
             return new PhysicalJar(jar, List.copyOf(mods.keySet()), canonical.getKey(),
                     metadata.displayName(), metadata.version(),
                     new ClientRequirementClassifier.FmlEvidence(scanComplete, sides),
-                    dependencyDescriptions);
+                    dependencyDescriptions, dependencies, dependencyMetadataComplete);
         }
     }
 }

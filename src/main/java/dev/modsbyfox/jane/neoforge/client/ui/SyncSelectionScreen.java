@@ -1,6 +1,7 @@
 package dev.modsbyfox.jane.neoforge.client.ui;
 
 import dev.modsbyfox.jane.core.ClientInstallCategory;
+import dev.modsbyfox.jane.core.ClientCleanupGraph;
 import dev.modsbyfox.jane.core.ClientCompatibilityReport;
 import dev.modsbyfox.jane.core.Comparison;
 import dev.modsbyfox.jane.core.ResolutionPlan;
@@ -25,6 +26,7 @@ final class SyncSelectionScreen extends UiScreen {
                     declarationBottom + 3, height - 29);
         }
         int listHeight() { return Math.max(0, listBottom - listTop); }
+        int maxScroll(int contentHeight) { return Math.max(0, contentHeight - listHeight()); }
     }
 
     private enum Kind { SOURCE_TRUSTED, SOURCE_SERVER, REQUIRED_HEADER, OPTIONAL_HEADER,
@@ -58,7 +60,7 @@ final class SyncSelectionScreen extends UiScreen {
         if (!declaredServerOnly.isEmpty()) {
             rows.add(new Row(Kind.EXTRA_SERVER_HEADER, null, 21));
             for (ClientCompatibilityReport.ExtraMod extra : declaredServerOnly)
-                rows.add(new Row(Kind.EXTRA_SERVER_MOD, null, extra, 34));
+                rows.add(new Row(Kind.EXTRA_SERVER_MOD, null, extra, 50));
         }
         rows.add(new Row(Kind.REQUIRED_HEADER, null, 21));
         for (Comparison.Result result : owner.session().context().results())
@@ -98,7 +100,7 @@ final class SyncSelectionScreen extends UiScreen {
                 layout.right() - layout.left() - 10), layout.left() + 5,
                 layout.declarationTop() + 13, 0xBBBBBB);
         List<Row> rows = rows();
-        scroll = Math.min(scroll, Math.max(0, totalHeight(rows) - layout.listHeight()));
+        scroll = Math.min(scroll, layout.maxScroll(totalHeight(rows)));
         if (layout.listHeight() > 0) {
             graphics.enableScissor(layout.left(), layout.listTop(), layout.right(), layout.listBottom());
             int y = layout.listTop() - scroll;
@@ -130,10 +132,20 @@ final class SyncSelectionScreen extends UiScreen {
         }
         if (row.kind() == Kind.EXTRA_SERVER_MOD) {
             ClientCompatibilityReport.ExtraMod extra = row.extra();
-            graphics.drawString(font, fit(extra.displayName(), available), left, y + 2, 0xFFFFFF);
-            Component detail = Component.translatable("jane.select.extra_server_readonly");
-            graphics.drawString(font, fit(extra.modId() + " · " + extra.version() + " · "
-                    + detail.getString(), available), left, y + 17, 0x88CCFF);
+            boolean checked = owner.cleanupSelection().isSelected(extra.filename());
+            ClientCleanupGraph.Decision decision = owner.cleanupSelection().serverDecision(extra.filename());
+            boolean canToggle = owner.cleanupSelectionEditable() && extra.verified()
+                    && (checked || decision != null && decision.eligible());
+            graphics.drawString(font, checked ? "☑" : "☐", left, y + 16,
+                    canToggle ? 0xFFFFFF : 0x777777);
+            int detailLeft = left + 17;
+            int detailWidth = available - 17;
+            graphics.drawString(font, fit(extra.displayName(), detailWidth), detailLeft, y + 2, 0xFFFFFF);
+            graphics.drawString(font, fit(extra.modId() + " · " + extra.version(), detailWidth),
+                    detailLeft, y + 13, 0xCCCCCC);
+            graphics.drawString(font, fit(extra.filename(), detailWidth), detailLeft, y + 24, 0xFFCC77);
+            graphics.drawString(font, fit(CleanupLabels.status(extra, decision, checked), detailWidth),
+                    detailLeft, y + 35, canToggle ? 0x88CCFF : 0xFF7777);
             return;
         }
         if (row.kind() != Kind.MOD) {
@@ -145,7 +157,8 @@ final class SyncSelectionScreen extends UiScreen {
                 default -> throw new IllegalStateException("Unknown selection row");
             };
             Component heading = row.kind() == Kind.EXTRA_SERVER_HEADER
-                    ? Component.translatable(key, declaredServerOnly.size()) : Component.translatable(key);
+                    ? Component.translatable(key, declaredServerOnly.size(), owner.cleanupSelection().selectedServerCount())
+                    : Component.translatable(key);
             graphics.drawString(font, fit(heading, available), left, y + 6,
                     row.kind() == Kind.EXTRA_SERVER_HEADER ? 0x66DDFF : 0xFFCC77);
             return;
@@ -178,6 +191,12 @@ final class SyncSelectionScreen extends UiScreen {
                     owner.setSourceEnabled(ResolutionPlan.TransferRoute.TRUSTED_SOURCE, !owner.trustedEnabled());
                 else if (row.kind() == Kind.SOURCE_SERVER)
                     owner.setSourceEnabled(ResolutionPlan.TransferRoute.CURRENT_SERVER, !owner.serverEnabled());
+                else if (row.kind() == Kind.EXTRA_SERVER_MOD && owner.cleanupSelectionEditable()) {
+                    ClientCompatibilityReport.ExtraMod extra = row.extra();
+                    boolean wanted = !owner.cleanupSelection().isSelected(extra.filename());
+                    if (owner.cleanupSelection().setSelected(extra.filename(), wanted))
+                        owner.cleanupSelectionChanged(extra.filename(), wanted);
+                }
                 else if (row.kind() == Kind.MOD && owner.selectionEditable()) {
                     Comparison.Result result = row.result();
                     String id = result.required().modId();
@@ -195,7 +214,7 @@ final class SyncSelectionScreen extends UiScreen {
 
     @Override public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         Layout layout = Layout.forSize(width, height);
-        int limit = Math.max(0, totalHeight(rows()) - layout.listHeight());
+        int limit = layout.maxScroll(totalHeight(rows()));
         scroll = Math.max(0, Math.min(limit, scroll - (int) Math.round(scrollY * 24)));
         return true;
     }

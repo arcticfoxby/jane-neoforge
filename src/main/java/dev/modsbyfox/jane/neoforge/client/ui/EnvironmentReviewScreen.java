@@ -1,20 +1,29 @@
 package dev.modsbyfox.jane.neoforge.client.ui;
 
 import dev.modsbyfox.jane.core.ClientCompatibilityReport;
+import dev.modsbyfox.jane.core.ClientCleanupSelection;
 import dev.modsbyfox.jane.core.Comparison;
 import dev.modsbyfox.jane.core.OneShotJoinOverride;
 import dev.modsbyfox.jane.core.PendingSyncContext;
 import dev.modsbyfox.jane.core.SyncSelection;
+import dev.modsbyfox.jane.neoforge.client.JaneClientAudit;
+import java.io.IOException;
 import java.util.Locale;
+import java.util.Map;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.neoforged.fml.loading.FMLPaths;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Presents the local environment result before any source lookup or file operation. */
 final class EnvironmentReviewScreen extends UiScreen {
+    private static final Logger LOGGER = LoggerFactory.getLogger("jane");
     private final PendingSyncContext context;
     private final ClientCompatibilityReport extras;
+    private final ClientCleanupSelection cleanupSelection;
     private final boolean auditSaveFailed;
     private final JaneClientUi.JoinActions actions;
     private Button joinButton;
@@ -25,8 +34,28 @@ final class EnvironmentReviewScreen extends UiScreen {
         super(Component.translatable("jane.environment.title"), parent);
         this.context = context;
         this.extras = extras;
-        this.auditSaveFailed = auditSaveFailed;
+        this.cleanupSelection = new ClientCleanupSelection(context, extras);
+        boolean defaultAuditSaved = auditDefaultCleanupSelection();
+        this.auditSaveFailed = auditSaveFailed || !defaultAuditSaved;
         this.actions = actions;
+    }
+
+    private boolean auditDefaultCleanupSelection() {
+        try {
+            JaneClientAudit.record(FMLPaths.GAMEDIR.get(), "EXTRA_SERVER_DETECTED", Map.of(
+                    "serverId", context.serverId(),
+                    "manifestDigest", OneShotJoinOverride.manifestDigest(context.manifest()),
+                    "candidateCount", Integer.toString(extras.declaredServerOnlyMods().size()),
+                    "verifiedCount", Long.toString(extras.declaredServerOnlyMods().stream()
+                            .filter(ClientCompatibilityReport.ExtraMod::verified).count()),
+                    "defaultSelectedCount", Long.toString(cleanupSelection.selectedServerCount()),
+                    "blockedCount", Long.toString(cleanupSelection.blockedServerCount())));
+            return true;
+        } catch (IOException | SecurityException exception) {
+            LOGGER.warn("Jane default cleanup selection audit failed: {}",
+                    exception.getClass().getSimpleName());
+            return false;
+        }
     }
 
     private boolean passed() { return Comparison.passed(context.results()); }
@@ -66,8 +95,9 @@ final class EnvironmentReviewScreen extends UiScreen {
 
     private void sync() {
         if (passed()) minecraft.setScreen(new CompatibilityReviewScreen(this, context, extras,
+                cleanupSelection, auditSaveFailed, actions));
+        else minecraft.setScreen(new SyncScreen(this, context, extras, cleanupSelection,
                 auditSaveFailed, actions));
-        else minecraft.setScreen(new SyncScreen(this, context, extras, auditSaveFailed, actions));
     }
 
     private void direct() {

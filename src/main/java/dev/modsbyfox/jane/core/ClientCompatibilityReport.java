@@ -11,18 +11,46 @@ import java.util.Objects;
 
 /** Local-only inventory of physical JARs outside the server-required baseline. */
 public record ClientCompatibilityReport(List<ExtraMod> explicitClientMods, List<ExtraMod> otherExtraMods,
-                                        String fingerprint) {
+                                        String fingerprint, ClientCleanupGraph cleanupGraph) {
     public enum Kind { EXPLICIT_CLIENT, EXPLICIT_SERVER, OTHER_EXTRA }
     public record ExtraMod(String modId, String displayName, String version, String filename,
-                           String sha512, Kind kind, Path jar) {
+                           String sha512, Kind kind, Path jar, List<String> containedModIds,
+                           boolean cleanupEligible, String cleanupBlockedReason) {
+        public ExtraMod(String modId, String displayName, String version, String filename,
+                        String sha512, Kind kind, Path jar) {
+            this(modId, displayName, version, filename, sha512, kind, jar,
+                    List.of(modId), false, kind == Kind.EXPLICIT_SERVER ? "NOT_ASSESSED" : null);
+        }
+
         public ExtraMod {
             if (!ManifestEntry.validId(modId) || displayName == null || displayName.isBlank()
                     || version == null || version.isBlank() || kind == null || jar == null
-                    || (kind == Kind.EXPLICIT_CLIENT && sha512 != null && !sha512.matches("[0-9a-f]{128}"))
-                    || (kind != Kind.EXPLICIT_CLIENT && sha512 != null))
+                    || (sha512 != null && !sha512.matches("[0-9a-f]{128}"))
+                    || (kind == Kind.OTHER_EXTRA && sha512 != null))
                 throw new IllegalArgumentException("Invalid extra mod");
             if (filename == null || filename.isBlank()) throw new IllegalArgumentException("Invalid extra filename");
+            containedModIds = List.copyOf(Objects.requireNonNull(containedModIds, "containedModIds"));
+            if (containedModIds.isEmpty() || !containedModIds.contains(modId)
+                    || containedModIds.contains("jane")
+                    || containedModIds.stream().anyMatch(id -> !ClientCleanupGraph.validModId(id))
+                    || containedModIds.stream().distinct().count() != containedModIds.size())
+                throw new IllegalArgumentException("Invalid contained mod IDs");
+            if (cleanupEligible && (kind != Kind.EXPLICIT_SERVER || sha512 == null
+                    || cleanupBlockedReason != null))
+                throw new IllegalArgumentException("Invalid cleanup eligibility");
+            if (cleanupBlockedReason != null && (kind != Kind.EXPLICIT_SERVER
+                    || cleanupBlockedReason.isBlank() || cleanupEligible))
+                throw new IllegalArgumentException("Invalid cleanup blocked reason");
         }
+
+        public boolean verified() {
+            return sha512 != null;
+        }
+    }
+
+    public ClientCompatibilityReport(List<ExtraMod> explicitClientMods, List<ExtraMod> otherExtraMods,
+                                     String fingerprint) {
+        this(explicitClientMods, otherExtraMods, fingerprint, ClientCleanupGraph.unavailable());
     }
 
     public ClientCompatibilityReport {
@@ -34,6 +62,7 @@ public record ClientCompatibilityReport(List<ExtraMod> explicitClientMods, List<
             if (mod.kind() == Kind.EXPLICIT_CLIENT) throw new IllegalArgumentException("Incorrect other kind");
         Objects.requireNonNull(fingerprint, "fingerprint");
         if (!fingerprint.matches("[0-9a-f]{128}")) throw new IllegalArgumentException("Invalid fingerprint");
+        Objects.requireNonNull(cleanupGraph, "cleanupGraph");
     }
 
     public List<ExtraMod> declaredServerOnlyMods() {

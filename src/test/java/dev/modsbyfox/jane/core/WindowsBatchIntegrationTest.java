@@ -89,7 +89,7 @@ class WindowsBatchIntegrationTest {
     }
 
     @Test
-    void rollsBackWhenLaterInstallFails() throws Exception {
+    void rejectsMissingLaterInstallBeforeAnyBackup() throws Exception {
         Path mods = Files.createDirectory(gameDir.resolve("mods"));
         Path a = Files.writeString(mods.resolve("a-old.jar"), "a-old");
         Path b = Files.writeString(mods.resolve("b-old.jar"), "b-old");
@@ -109,7 +109,8 @@ class WindowsBatchIntegrationTest {
         assertTrue(Files.isRegularFile(gameDir.resolve("jane/pending/" + ID + "/failed.marker")));
         assertFalse(Files.exists(gameDir.resolve("jane/pending/" + ID + "/success.marker")));
         String log = Files.readString(gameDir.resolve("jane/pending/" + ID + "/update.log"));
-        assertTrue(log.contains("ROLLBACK START"));
+        assertFalse(log.contains("BACKUP alpha OK"));
+        assertFalse(log.contains("ROLLBACK START"));
         assertTrue(log.contains("FAILED"));
     }
 

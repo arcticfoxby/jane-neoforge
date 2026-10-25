@@ -1,18 +1,28 @@
 package dev.modsbyfox.jane.neoforge.client.ui;
 
 import dev.modsbyfox.jane.core.ClientCompatibilityReport;
+import dev.modsbyfox.jane.core.ClientCleanupSelection;
+import dev.modsbyfox.jane.core.ClientCleanupGraph;
+import dev.modsbyfox.jane.core.ClientDisablePlan;
 import dev.modsbyfox.jane.core.Comparison;
 import dev.modsbyfox.jane.core.DownloadCoordinator;
 import dev.modsbyfox.jane.core.JaneSyncSession;
 import dev.modsbyfox.jane.core.PendingSyncContext;
+import dev.modsbyfox.jane.core.PendingRecovery;
+import dev.modsbyfox.jane.core.PendingStore;
 import dev.modsbyfox.jane.core.ResolutionPlan;
 import dev.modsbyfox.jane.core.StagingWorkspace;
 import dev.modsbyfox.jane.neoforge.client.JaneClientAudit;
 import dev.modsbyfox.jane.core.SyncSelection;
 import dev.modsbyfox.jane.core.UpdatePlan;
+import dev.modsbyfox.jane.neoforge.NeoForgePhysicalDiscovery;
+import dev.modsbyfox.jane.neoforge.NeoForgeStagedCleanupGraph;
+import dev.modsbyfox.jane.neoforge.client.NeoForgeClientCompatibility;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,6 +39,7 @@ final class SyncScreen extends UiScreen {
     private static final Logger LOGGER = LoggerFactory.getLogger("jane");
     private final PendingSyncContext context;
     private final ClientCompatibilityReport extras;
+    private final ClientCleanupSelection cleanupSelection;
     private boolean auditWarning;
     private final JaneClientUi.JoinActions actions;
     private final JaneSyncSession session;
@@ -54,11 +65,13 @@ final class SyncScreen extends UiScreen {
     private Button server;
 
     SyncScreen(Screen parent, PendingSyncContext context, ClientCompatibilityReport extras,
+               ClientCleanupSelection cleanupSelection,
                boolean auditSaveFailed,
                JaneClientUi.JoinActions actions) {
         super(Component.translatable("jane.sync.title"), parent);
         this.context = context;
         this.extras = extras;
+        this.cleanupSelection = cleanupSelection;
         this.auditWarning = auditSaveFailed;
         this.actions = actions;
         this.session = new JaneSyncSession(context);
@@ -71,7 +84,9 @@ final class SyncScreen extends UiScreen {
     JaneSyncSession session() { return session; }
     SyncSelection selection() { return selection; }
     ClientCompatibilityReport extras() { return extras; }
+    ClientCleanupSelection cleanupSelection() { return cleanupSelection; }
     boolean selectionEditable() { return !busy && !resolving && !session.snapshot().started() && ready == null; }
+    boolean cleanupSelectionEditable() { return !busy && !resolving && !closed; }
     boolean trustedEnabled() { return trustedEnabled; }
     boolean serverEnabled() { return serverEnabled; }
     boolean serverAvailable() { return SyncTransferService.serverRouteAvailable(session); }
@@ -89,6 +104,11 @@ final class SyncScreen extends UiScreen {
         coordinator = null;
         audit(selected ? "USER_SELECT_OPTIONAL" : "USER_DESELECT_OPTIONAL", Map.of(
                 "modId", modId, "selectedCount", Integer.toString(selection.selectedUnmatchedModIds().size())));
+    }
+
+    void cleanupSelectionChanged(String filename, boolean selected) {
+        audit(selected ? "EXTRA_SERVER_SELECTED" : "EXTRA_SERVER_DESELECTED", Map.of(
+                "filename", filename, "selectedCount", Long.toString(cleanupSelection.selectedServerCount())));
     }
 
     @Override protected void init() {
@@ -484,18 +504,135 @@ final class SyncScreen extends UiScreen {
 
     private void launchUpdater() {
         if (busy || ready == null) return;
-        audit("UPDATE_INSTALL_CONFIRMED", Map.of("downloadCount",
-                Integer.toString(ready.operations().size())));
-        busy = true;
         UpdatePlan plan = ready;
-        CompletableFuture.runAsync(() -> {
-            try { dev.modsbyfox.jane.core.PendingRecovery.verifyForLaunch(gameDir, plan); }
-            catch (Exception exception) { throw new java.util.concurrent.CompletionException(exception); }
-        }).whenComplete((unused, failure) -> minecraft.execute(() -> {
+        ClientCleanupSelection.Snapshot snapshot = cleanupSelection.snapshot();
+        String installSelectionDigest = selection.digest();
+        if (snapshot.selectedJars().isEmpty()) {
+            showFinalConfirmation(plan, snapshot, installSelectionDigest, null, null);
+            return;
+        }
+        busy = true;
+        notice = Component.translatable("jane.cleanup.checking");
+        CompletableFuture.supplyAsync(() -> {
+            try { return new PreparedUpdate(prepareFresh(plan, snapshot, installSelectionDigest), null); }
+            catch (CleanupBlocked exception) { return new PreparedUpdate(null, exception.notice()); }
+            catch (Exception exception) {
+                return new PreparedUpdate(null, Component.translatable("jane.cleanup.staged_unresolved"));
+            }
+        }).whenComplete((prepared, failure) -> minecraft.execute(() -> {
+            busy = false;
+            if (closed || minecraft.screen != this) return;
+            if (failure != null || ready != plan || !selection.digest().equals(installSelectionDigest)
+                    || !cleanupSelection.stillMatches(snapshot, context, extras)) {
+                notice = Component.translatable("jane.cleanup.plan_changed");
+                return;
+            }
+            notice = null;
+            showFinalConfirmation(plan, snapshot, installSelectionDigest,
+                    prepared.plan(), prepared.blockReason());
+        }));
+    }
+
+    private record PreparedUpdate(ClientDisablePlan plan, Component blockReason) { }
+
+    private static final class CleanupBlocked extends IOException {
+        private final Component notice;
+        CleanupBlocked(Component notice) { super("Staged client cleanup dependency is unsafe"); this.notice = notice; }
+        Component notice() { return notice; }
+    }
+
+    private ClientDisablePlan prepareFresh(UpdatePlan installPlan,
+                                           ClientCleanupSelection.Snapshot snapshot,
+                                           String installSelectionDigest) throws IOException {
+        ClientCompatibilityReport fresh = NeoForgeClientCompatibility.classify(gameDir,
+                context.manifest(), NeoForgePhysicalDiscovery.discover(gameDir));
+        if (!cleanupSelection.stillMatches(snapshot, context, fresh)
+                || !selection.digest().equals(installSelectionDigest))
+            throw new IOException("Confirmed client cleanup selection changed");
+        ClientCleanupGraph futureGraph = NeoForgeStagedCleanupGraph.merge(gameDir,
+                fresh.cleanupGraph(), installPlan);
+        ClientCleanupGraph.Evaluation futureDecision = futureGraph.evaluate(snapshot.selectedJars().stream()
+                .map(ClientCleanupSelection.SelectedJar::filename).collect(java.util.stream.Collectors.toSet()));
+        if (!futureDecision.safe()) {
+            for (ClientCleanupSelection.SelectedJar jar : snapshot.selectedJars()) {
+                ClientCleanupGraph.Decision decision = futureDecision.decision(jar.filename());
+                if (decision == null || !decision.eligible()) {
+                    ClientCompatibilityReport.ExtraMod mod = fresh.otherExtraMods().stream()
+                            .filter(candidate -> candidate.filename().equals(jar.filename())).findFirst()
+                            .orElse(null);
+                    throw new CleanupBlocked(mod == null
+                            ? Component.translatable("jane.cleanup.staged_unresolved")
+                            : CleanupLabels.status(mod, decision, true));
+                }
+            }
+            throw new CleanupBlocked(Component.translatable("jane.cleanup.staged_unresolved"));
+        }
+        List<ClientCompatibilityReport.ExtraMod> chosen = new ArrayList<>();
+        for (ClientCleanupSelection.SelectedJar jar : snapshot.selectedJars()) {
+            ClientCompatibilityReport.ExtraMod mod = fresh.explicitClientMods().stream()
+                    .filter(candidate -> candidate.filename().equals(jar.filename())).findFirst()
+                    .orElseGet(() -> fresh.otherExtraMods().stream()
+                            .filter(candidate -> candidate.filename().equals(jar.filename())).findFirst()
+                            .orElse(null));
+            if (mod == null) throw new IOException("Confirmed client JAR disappeared");
+            chosen.add(mod);
+        }
+        ClientDisablePlan disable = ClientDisablePlan.prepare(gameDir, context.serverId(),
+                context.manifest(), fresh, chosen, installPlan, futureGraph);
+        if (!cleanupSelection.stillMatches(snapshot, context, fresh)
+                || !selection.digest().equals(installSelectionDigest))
+            throw new IOException("Confirmed client cleanup selection changed during verification");
+        return disable;
+    }
+
+    private void showFinalConfirmation(UpdatePlan plan, ClientCleanupSelection.Snapshot snapshot,
+                                       String installSelectionDigest, ClientDisablePlan provisional,
+                                       Component blockReason) {
+        minecraft.setScreen(new ClientUpdateConfirmScreen(this, plan.operations().size(),
+                cleanupSelection.selectedExtras(),
+                () -> ready == plan && selection.digest().equals(installSelectionDigest)
+                        && cleanupSelection.stillMatches(snapshot, context, extras),
+                () -> {
+                    minecraft.setScreen(this);
+                    confirmAndLaunch(plan, snapshot, installSelectionDigest, provisional);
+                }, blockReason));
+    }
+
+    private void confirmAndLaunch(UpdatePlan plan, ClientCleanupSelection.Snapshot snapshot,
+                                  String installSelectionDigest, ClientDisablePlan provisional) {
+        if (busy || ready != plan || !selection.digest().equals(installSelectionDigest)
+                || !cleanupSelection.stillMatches(snapshot, context, extras)) {
+            notice = Component.translatable("jane.cleanup.plan_changed");
+            return;
+        }
+        audit("CLIENT_UPDATE_CONFIRMED", Map.of("installCount", Integer.toString(plan.operations().size()),
+                "cleanupCount", Integer.toString(snapshot.selectedJars().size())));
+        busy = true;
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                UpdatePlan combined = plan;
+                if (!snapshot.selectedJars().isEmpty()) {
+                    if (provisional == null) throw new IOException("Missing staged cleanup proof");
+                    ClientDisablePlan fresh = prepareFresh(plan, snapshot, installSelectionDigest);
+                    if (!provisional.entries().equals(fresh.entries())
+                            || !provisional.dependencyGuards().equals(fresh.dependencyGuards())
+                            || !provisional.stagedGraphFingerprint().equals(fresh.stagedGraphFingerprint()))
+                        throw new IOException("Confirmed staged cleanup proof changed");
+                    combined = plan.withCleanup(fresh);
+                    PendingStore.create(gameDir, combined);
+                }
+                PendingRecovery.verifyForLaunch(gameDir, combined);
+                return combined;
+            } catch (Exception exception) {
+                throw new java.util.concurrent.CompletionException(exception);
+            }
+        }).whenComplete((combined, failure) -> minecraft.execute(() -> {
             if (failure != null) notice = Component.translatable("jane.recovery.unsafe");
             else if (minecraft.screen == this) {
                 try {
-                    UpdateLauncher.launch(minecraft, gameDir, plan);
+                    audit("CLIENT_CLEANUP_STARTED", Map.of("cleanupCount",
+                            Integer.toString(snapshot.selectedJars().size())));
+                    UpdateLauncher.launch(minecraft, gameDir, combined);
                     return;
                 } catch (IOException exception) {
                     notice = Component.translatable("jane.sync.launch_failed");
@@ -560,8 +697,9 @@ final class SyncScreen extends UiScreen {
                         plan.count(ResolutionPlan.Availability.SERVER_ONLY),
                         plan.count(ResolutionPlan.Availability.LOOKUP_FAILED)), 22, 0xCCCCCC);
             if (height >= 150 || notice == null && !auditWarning)
-                centered(graphics, Component.translatable("jane.select.summary", selectedUnmet(), unselectedUnmet()),
-                        35, 0xFFCC77);
+                graphics.drawCenteredString(font, fit(Component.translatable("jane.cleanup.sync_counts",
+                        selectedUnmet(), cleanupSelection.selectedServerCount(),
+                        cleanupSelection.blockedServerCount()), width - 20), width / 2, 35, 0xFFCC77);
             if (height >= 165)
                 centered(graphics, Component.translatable("jane.sync.route_progress",
                         snapshot.activeRoute() == ResolutionPlan.TransferRoute.CURRENT_SERVER
