@@ -3,6 +3,7 @@ package dev.modsbyfox.jane.core;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -17,6 +18,8 @@ class OneShotPermissionsTest {
     private static final String HASH = "a".repeat(128);
     private static final ManifestEntry ENTRY = new ManifestEntry("example", "Example", "1", 12, HASH);
     private static final RequiredManifest MANIFEST = new RequiredManifest(RequiredManifest.PROTOCOL, List.of(ENTRY));
+    private static final ClientCompatibilityReport.FileIdentity EXTRA_IDENTITY =
+            new ClientCompatibilityReport.FileIdentity(12, FileTime.from(Instant.parse("2026-01-01T00:00:00Z")), "file-1");
 
     private static List<Comparison.Result> missing() {
         return Comparison.compare(MANIFEST, Map.of(), path -> HASH);
@@ -97,7 +100,8 @@ class OneShotPermissionsTest {
 
     @Test void extraOnlyPermissionPreservesExactRequiredStatusAndExpires() {
         var extra = new ClientCompatibilityReport.ExtraMod("iris", "Iris", "1", "iris.jar",
-                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("iris.jar"));
+                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("iris.jar"),
+                List.of("iris"), false, null, EXTRA_IDENTITY);
         var report = new ClientCompatibilityReport(List.of(), List.of(extra),
                 ClientCompatibilityReport.fingerprint(List.of()));
         MutableClock clock = new MutableClock();
@@ -115,7 +119,8 @@ class OneShotPermissionsTest {
 
     @Test void changingAnExtraToDedicatedServerRequiresAnotherConfirmation() {
         var extra = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
-                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"));
+                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"),
+                List.of("sample"), false, null, EXTRA_IDENTITY);
         var dedicated = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
                 null, ClientCompatibilityReport.Kind.EXPLICIT_SERVER, Path.of("sample.jar"));
         var before = new ClientCompatibilityReport(List.of(), List.of(extra),
@@ -131,10 +136,11 @@ class OneShotPermissionsTest {
 
     @Test void changingContainedIdsRequiresAnotherExtraJoinConfirmation() {
         var oneId = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
-                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"));
+                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"),
+                List.of("sample"), false, null, EXTRA_IDENTITY);
         var twoIds = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
                 null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"),
-                List.of("sample", "helper"), false, null);
+                List.of("sample", "helper"), false, null, EXTRA_IDENTITY);
         var before = new ClientCompatibilityReport(List.of(), List.of(oneId),
                 ClientCompatibilityReport.fingerprint(List.of()));
         var after = new ClientCompatibilityReport(List.of(), List.of(twoIds),
@@ -144,6 +150,30 @@ class OneShotPermissionsTest {
         assertTrue(permission.arm(SERVER, MANIFEST, before));
         permission.beginConnection(login);
         assertFalse(permission.consume(login, SERVER, MANIFEST, after));
+    }
+
+    @Test void replacingAnUnclassifiedExtraRequiresAnotherConfirmation() {
+        var first = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
+                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"),
+                List.of("sample"), false, null, EXTRA_IDENTITY);
+        var replacement = new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
+                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"),
+                List.of("sample"), false, null,
+                new ClientCompatibilityReport.FileIdentity(12, EXTRA_IDENTITY.modifiedTime(), "file-2"));
+        var before = new ClientCompatibilityReport(List.of(), List.of(first),
+                ClientCompatibilityReport.fingerprint(List.of()));
+        var after = new ClientCompatibilityReport(List.of(), List.of(replacement),
+                ClientCompatibilityReport.fingerprint(List.of()));
+        OneShotExtraJoin permission = new OneShotExtraJoin();
+        Object login = new Object();
+        assertTrue(permission.arm(SERVER, MANIFEST, before));
+        permission.beginConnection(login);
+        assertFalse(permission.consume(login, SERVER, MANIFEST, after));
+        assertFalse(permission.arm(SERVER, MANIFEST,
+                new ClientCompatibilityReport(List.of(), List.of(
+                        new ClientCompatibilityReport.ExtraMod("sample", "Sample", "1", "sample.jar",
+                                null, ClientCompatibilityReport.Kind.OTHER_EXTRA, Path.of("sample.jar"))),
+                        ClientCompatibilityReport.fingerprint(List.of()))));
     }
 
     private static final class MutableClock extends Clock {

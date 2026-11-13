@@ -10,6 +10,11 @@ import net.minecraft.network.chat.Component;
 
 /** Explicit final approval of the exact client JARs to install and move after exit. */
 final class ClientUpdateConfirmScreen extends UiScreen {
+    static boolean requiresOtherRisk(List<ClientCompatibilityReport.ExtraMod> cleanup) {
+        return cleanup.stream().anyMatch(mod ->
+                mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA);
+    }
+
     record Layout(int listTop, int listBottom, int rowHeight) {
         static Layout forSize(int height, boolean blocked) {
             int top = height < 140 ? 41 : height < 170 ? 47 : 72;
@@ -53,8 +58,11 @@ final class ClientUpdateConfirmScreen extends UiScreen {
         int x = (width - w) / 2;
         confirmButton = addRenderableWidget(Button.builder(Component.translatable("jane.cleanup.confirm_action"),
                 button -> {
-                    if (blockReason == null && stillCurrent.getAsBoolean()
-                            && (installCount > 0 || !cleanup.isEmpty())) confirm.run();
+                    if (blockReason != null || !stillCurrent.getAsBoolean()
+                            || installCount == 0 && cleanup.isEmpty()) return;
+                    if (requiresOtherRisk(cleanup))
+                        minecraft.setScreen(new OtherExtraRiskConfirmScreen(this, cleanup, stillCurrent, confirm));
+                    else confirm.run();
                 }).bounds(x, height - 52, w, 20).build());
         addRenderableWidget(Button.builder(Component.translatable("jane.cleanup.return_edit"),
                 button -> onClose()).bounds(x, height - 28, w, 20).build());

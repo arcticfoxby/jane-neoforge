@@ -1,6 +1,7 @@
 package dev.modsbyfox.jane.neoforge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.modsbyfox.jane.core.Hashing;
@@ -65,6 +66,60 @@ class ServerManifestTest {
         assertTrue(prepared.manifest().entries().isEmpty());
         assertTrue(prepared.classified().stream().allMatch(item ->
                 item.decision().requirement() == ClientRequirement.NOT_REQUIRED));
+    }
+
+    @Test
+    void exactBlacklistCopyExcludesEvenAnExplicitRequiredJar() throws IOException {
+        Path jar = jar("required.jar", "same bytes");
+        Path blacklist = Files.createDirectories(gameDir.resolve("jane/blacklist"));
+        Files.copy(jar, blacklist.resolve(jar.getFileName()));
+
+        var prepared = ServerManifest.prepare(gameDir,
+                List.of(physical(jar, List.of("required"), false)),
+                (item, hash) -> { throw new IOException("blacklisted copy must bypass classification"); });
+
+        assertTrue(prepared.manifest().entries().isEmpty());
+        assertTrue(prepared.filesByHash().isEmpty());
+        assertEquals(ClientRequirement.NOT_REQUIRED, prepared.classified().getFirst().decision().requirement());
+        assertEquals("blacklist_exact_copy", prepared.classified().getFirst().decision().reason());
+    }
+
+    @Test
+    void unrelatedUnicodeJarNameRemainsValidWithoutABlacklistCopy() throws IOException {
+        Path jar = jar("【农夫乐事】.jar", "original");
+        var prepared = ServerManifest.prepare(gameDir,
+                List.of(physical(jar, List.of("farmers_delight"), false)),
+                (item, hash) -> ServerManifest.Evidence.NONE);
+        assertEquals(1, prepared.manifest().entries().size());
+    }
+
+    @Test
+    void mismatchedBlacklistCopiesDoNotExcludeAndNormalClassificationStillRuns() throws IOException {
+        Path differentSize = jar("different-size.jar", "original");
+        Path differentHash = jar("different-hash.jar", "original");
+        Path blacklist = Files.createDirectories(gameDir.resolve("jane/blacklist"));
+        Files.writeString(blacklist.resolve("different-size.jar"), "short");
+        Files.writeString(blacklist.resolve("different-hash.jar"), "changed!");
+
+        var prepared = ServerManifest.prepare(gameDir, List.of(
+                physical(differentSize, List.of("different_size"), false),
+                physical(differentHash, List.of("different_hash"), false)),
+                (item, hash) -> ServerManifest.Evidence.NONE);
+
+        assertEquals(2, prepared.manifest().entries().size());
+        assertTrue(prepared.classified().stream().allMatch(item ->
+                item.decision().requirement() == ClientRequirement.UNKNOWN));
+    }
+
+    @Test
+    void occupiedBlacklistDirectoryFailsClosed() throws IOException {
+        Path jar = jar("required.jar", "original");
+        Files.createDirectory(gameDir.resolve("jane"));
+        Files.writeString(gameDir.resolve("jane/blacklist"), "occupied");
+
+        assertThrows(IOException.class, () -> ServerManifest.prepare(gameDir,
+                List.of(physical(jar, List.of("required"), false)),
+                (item, hash) -> ServerManifest.Evidence.NONE));
     }
 
     private Path jar(String name, String content) throws IOException {

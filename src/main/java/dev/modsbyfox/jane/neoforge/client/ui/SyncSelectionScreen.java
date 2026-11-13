@@ -30,7 +30,8 @@ final class SyncSelectionScreen extends UiScreen {
     }
 
     private enum Kind { SOURCE_TRUSTED, SOURCE_SERVER, REQUIRED_HEADER, OPTIONAL_HEADER,
-        MATCHED_HEADER, EXTRA_SERVER_HEADER, EXTRA_SERVER_MOD, MOD }
+        MATCHED_HEADER, EXTRA_SERVER_HEADER, EXTRA_SERVER_MOD, EXTRA_OTHER_HEADER,
+        EXTRA_OTHER_MOD, MOD }
     private record Row(Kind kind, Comparison.Result result,
                        ClientCompatibilityReport.ExtraMod extra, int height) {
         Row(Kind kind, Comparison.Result result, int height) { this(kind, result, null, height); }
@@ -39,6 +40,7 @@ final class SyncSelectionScreen extends UiScreen {
     private final SyncScreen owner;
     private final SyncSelection selection;
     private final List<ClientCompatibilityReport.ExtraMod> declaredServerOnly;
+    private final List<ClientCompatibilityReport.ExtraMod> otherExtras;
     private int scroll;
 
     SyncSelectionScreen(SyncScreen owner) {
@@ -46,6 +48,7 @@ final class SyncSelectionScreen extends UiScreen {
         this.owner = owner;
         this.selection = owner.selection();
         this.declaredServerOnly = owner.extras().declaredServerOnlyMods();
+        this.otherExtras = owner.extras().unclassifiedExtraMods();
     }
 
     static boolean adjustable(Comparison.Result result, ClientInstallCategory category) {
@@ -61,6 +64,11 @@ final class SyncSelectionScreen extends UiScreen {
             rows.add(new Row(Kind.EXTRA_SERVER_HEADER, null, 21));
             for (ClientCompatibilityReport.ExtraMod extra : declaredServerOnly)
                 rows.add(new Row(Kind.EXTRA_SERVER_MOD, null, extra, 50));
+        }
+        if (!otherExtras.isEmpty()) {
+            rows.add(new Row(Kind.EXTRA_OTHER_HEADER, null, 21));
+            for (ClientCompatibilityReport.ExtraMod extra : otherExtras)
+                rows.add(new Row(Kind.EXTRA_OTHER_MOD, null, extra, 50));
         }
         rows.add(new Row(Kind.REQUIRED_HEADER, null, 21));
         for (Comparison.Result result : owner.session().context().results())
@@ -130,11 +138,12 @@ final class SyncSelectionScreen extends UiScreen {
                     left, y + 6, enabled ? 0xFFFFFF : 0x999999);
             return;
         }
-        if (row.kind() == Kind.EXTRA_SERVER_MOD) {
+        if (row.kind() == Kind.EXTRA_SERVER_MOD || row.kind() == Kind.EXTRA_OTHER_MOD) {
             ClientCompatibilityReport.ExtraMod extra = row.extra();
             boolean checked = owner.cleanupSelection().isSelected(extra.filename());
-            ClientCleanupGraph.Decision decision = owner.cleanupSelection().serverDecision(extra.filename());
+            ClientCleanupGraph.Decision decision = owner.cleanupSelection().cleanupDecision(extra.filename());
             boolean canToggle = owner.cleanupSelectionEditable() && extra.verified()
+                    && (extra.kind() != ClientCompatibilityReport.Kind.OTHER_EXTRA || extra.cleanupEligible())
                     && (checked || decision != null && decision.eligible());
             graphics.drawString(font, checked ? "☑" : "☐", left, y + 16,
                     canToggle ? 0xFFFFFF : 0x777777);
@@ -154,13 +163,17 @@ final class SyncSelectionScreen extends UiScreen {
                 case OPTIONAL_HEADER -> "jane.select.optional_group";
                 case MATCHED_HEADER -> "jane.sync.matched_group";
                 case EXTRA_SERVER_HEADER -> "jane.select.extra_server_group";
+                case EXTRA_OTHER_HEADER -> "jane.select.extra_other_group";
                 default -> throw new IllegalStateException("Unknown selection row");
             };
             Component heading = row.kind() == Kind.EXTRA_SERVER_HEADER
                     ? Component.translatable(key, declaredServerOnly.size(), owner.cleanupSelection().selectedServerCount())
+                    : row.kind() == Kind.EXTRA_OTHER_HEADER
+                    ? Component.translatable(key, otherExtras.size())
                     : Component.translatable(key);
             graphics.drawString(font, fit(heading, available), left, y + 6,
-                    row.kind() == Kind.EXTRA_SERVER_HEADER ? 0x66DDFF : 0xFFCC77);
+                    row.kind() == Kind.EXTRA_SERVER_HEADER || row.kind() == Kind.EXTRA_OTHER_HEADER
+                            ? 0x66DDFF : 0xFFCC77);
             return;
         }
         Comparison.Result result = row.result();
@@ -191,11 +204,12 @@ final class SyncSelectionScreen extends UiScreen {
                     owner.setSourceEnabled(ResolutionPlan.TransferRoute.TRUSTED_SOURCE, !owner.trustedEnabled());
                 else if (row.kind() == Kind.SOURCE_SERVER)
                     owner.setSourceEnabled(ResolutionPlan.TransferRoute.CURRENT_SERVER, !owner.serverEnabled());
-                else if (row.kind() == Kind.EXTRA_SERVER_MOD && owner.cleanupSelectionEditable()) {
+                else if ((row.kind() == Kind.EXTRA_SERVER_MOD || row.kind() == Kind.EXTRA_OTHER_MOD)
+                        && owner.cleanupSelectionEditable()) {
                     ClientCompatibilityReport.ExtraMod extra = row.extra();
                     boolean wanted = !owner.cleanupSelection().isSelected(extra.filename());
                     if (owner.cleanupSelection().setSelected(extra.filename(), wanted))
-                        owner.cleanupSelectionChanged(extra.filename(), wanted);
+                        owner.cleanupSelectionChanged(extra, wanted);
                 }
                 else if (row.kind() == Kind.MOD && owner.selectionEditable()) {
                     Comparison.Result result = row.result();

@@ -67,6 +67,35 @@ class ClientDisableStrictPlanTest {
         assertEquals("server bytes", Files.readString(serverJar));
     }
 
+    @Test
+    void manuallyChosenUniversalExtraNeedsExactIdentityHashAndCompleteGraph() throws Exception {
+        Path mods = Files.createDirectory(game.resolve("mods"));
+        Path jar = Files.writeString(mods.resolve("universal.jar"), "universal bytes");
+        String hash = Hashing.sha512(jar);
+        var extra = new ClientCompatibilityReport.ExtraMod("universal", "Universal", "1",
+                "universal.jar", hash, ClientCompatibilityReport.Kind.OTHER_EXTRA, jar,
+                List.of("universal"), true, null, ClientCompatibilityReport.FileIdentity.capture(jar));
+        var graph = new ClientCleanupGraph(List.of(new ClientCleanupGraph.PhysicalJar(
+                "universal.jar", List.of("universal"), List.of(), true, hash)), List.of(), true);
+        var report = new ClientCompatibilityReport(List.of(), List.of(extra),
+                ClientCompatibilityReport.fingerprint(List.of()), graph);
+        RequiredManifest empty = new RequiredManifest(RequiredManifest.PROTOCOL, List.of());
+        ClientDisablePlan plan = ClientDisablePlan.prepare(game, SERVER, empty, report, List.of(extra));
+        assertEquals(ClientCompatibilityReport.Kind.OTHER_EXTRA, plan.entries().getFirst().kind());
+        assertEquals(List.of(new ClientDisablePlan.DependencyGuard("universal.jar", hash)),
+                plan.dependencyGuards());
+        assertFalse(Files.exists(game.resolve("jane")), "Preconfirmation planning must be read-only");
+
+        Files.writeString(jar, "different bytes");
+        assertThrows(java.io.IOException.class,
+                () -> ClientDisablePlan.prepare(game, SERVER, empty, report, List.of(extra)));
+        assertThrows(java.io.IOException.class,
+                () -> ClientDisablePlan.prepare(game, SERVER, empty,
+                        new ClientCompatibilityReport(List.of(), List.of(extra),
+                                ClientCompatibilityReport.fingerprint(List.of()), ClientCleanupGraph.unavailable()),
+                        List.of(extra)));
+    }
+
     private static ClientCompatibilityReport.ExtraMod extra(
             Path file, String id, ClientCompatibilityReport.Kind kind) throws Exception {
         return new ClientCompatibilityReport.ExtraMod(id, id, "1", file.getFileName().toString(),

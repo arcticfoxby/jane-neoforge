@@ -19,7 +19,8 @@ public final class OneShotExtraJoin {
 
     public synchronized boolean arm(String serverId, RequiredManifest manifest, ClientCompatibilityReport extras) {
         clear();
-        if (serverId == null || !serverId.matches("[0-9a-f]{64}") || manifest == null || !hasExtras(extras))
+        if (serverId == null || !serverId.matches("[0-9a-f]{64}") || manifest == null
+                || !hasExtras(extras) || !unclassifiedIdentitiesKnown(extras))
             return false;
         intent = new Intent(serverId, OneShotJoinOverride.manifestDigest(manifest), digest(extras), clock.instant());
         return true;
@@ -38,7 +39,8 @@ public final class OneShotExtraJoin {
             return intent != null && currentConnection != null && connection == currentConnection
                     && !expired() && intent.serverId().equals(serverId)
                     && intent.manifestDigest().equals(OneShotJoinOverride.manifestDigest(manifest))
-                    && hasExtras(extras) && intent.extrasDigest().equals(digest(extras));
+                    && hasExtras(extras) && unclassifiedIdentitiesKnown(extras)
+                    && intent.extrasDigest().equals(digest(extras));
         } catch (RuntimeException exception) {
             return false;
         } finally {
@@ -54,6 +56,10 @@ public final class OneShotExtraJoin {
 
     public static boolean hasExtras(ClientCompatibilityReport report) {
         return report != null && (!report.explicitClientMods().isEmpty() || !report.otherExtraMods().isEmpty());
+    }
+
+    private static boolean unclassifiedIdentitiesKnown(ClientCompatibilityReport report) {
+        return report.unclassifiedExtraMods().stream().allMatch(mod -> mod.fileIdentity() != null);
     }
 
     /** Use observed metadata; displaying universal extras does not require hashing them. */
@@ -74,7 +80,7 @@ public final class OneShotExtraJoin {
 
     private static void append(StringBuilder data, ClientCompatibilityReport.ExtraMod mod) {
         for (String field : new String[] { mod.kind().name(), mod.modId(), mod.version(),
-                mod.filename(), mod.sha512() }) {
+                mod.filename(), mod.sha512(), ClientCompatibilityReport.identityValue(mod.fileIdentity()) }) {
             if (field == null) data.append("-1:");
             else data.append(field.length()).append(':').append(field);
         }

@@ -1,7 +1,12 @@
 package dev.modsbyfox.jane.core;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Comparator;
@@ -13,20 +18,44 @@ import java.util.Objects;
 public record ClientCompatibilityReport(List<ExtraMod> explicitClientMods, List<ExtraMod> otherExtraMods,
                                         String fingerprint, ClientCleanupGraph cleanupGraph) {
     public enum Kind { EXPLICIT_CLIENT, EXPLICIT_SERVER, OTHER_EXTRA }
+    /** Discovery-time physical identity; no JAR contents need to be read for this check. */
+    public record FileIdentity(long size, FileTime modifiedTime, String fileKey) {
+        public FileIdentity {
+            if (size < 0 || modifiedTime == null) throw new IllegalArgumentException("Invalid extra file identity");
+        }
+
+        public static FileIdentity capture(Path jar) throws IOException {
+            PathSafety.rejectReparsePoint(jar);
+            BasicFileAttributes attributes = Files.readAttributes(jar, BasicFileAttributes.class,
+                    LinkOption.NOFOLLOW_LINKS);
+            if (!attributes.isRegularFile() || attributes.isSymbolicLink())
+                throw new IOException("Selected extra JAR is not an ordinary file");
+            Object key = attributes.fileKey();
+            return new FileIdentity(attributes.size(), attributes.lastModifiedTime(),
+                    key == null ? null : key.toString());
+        }
+    }
+
     public record ExtraMod(String modId, String displayName, String version, String filename,
                            String sha512, Kind kind, Path jar, List<String> containedModIds,
-                           boolean cleanupEligible, String cleanupBlockedReason) {
+                           boolean cleanupEligible, String cleanupBlockedReason, FileIdentity fileIdentity) {
         public ExtraMod(String modId, String displayName, String version, String filename,
                         String sha512, Kind kind, Path jar) {
             this(modId, displayName, version, filename, sha512, kind, jar,
-                    List.of(modId), false, kind == Kind.EXPLICIT_SERVER ? "NOT_ASSESSED" : null);
+                    List.of(modId), false, kind == Kind.EXPLICIT_SERVER ? "NOT_ASSESSED" : null, null);
+        }
+
+        public ExtraMod(String modId, String displayName, String version, String filename,
+                        String sha512, Kind kind, Path jar, List<String> containedModIds,
+                        boolean cleanupEligible, String cleanupBlockedReason) {
+            this(modId, displayName, version, filename, sha512, kind, jar,
+                    containedModIds, cleanupEligible, cleanupBlockedReason, null);
         }
 
         public ExtraMod {
             if (!ManifestEntry.validId(modId) || displayName == null || displayName.isBlank()
                     || version == null || version.isBlank() || kind == null || jar == null
-                    || (sha512 != null && !sha512.matches("[0-9a-f]{128}"))
-                    || (kind == Kind.OTHER_EXTRA && sha512 != null))
+                    || (sha512 != null && !sha512.matches("[0-9a-f]{128}")))
                 throw new IllegalArgumentException("Invalid extra mod");
             if (filename == null || filename.isBlank()) throw new IllegalArgumentException("Invalid extra filename");
             containedModIds = List.copyOf(Objects.requireNonNull(containedModIds, "containedModIds"));
@@ -35,10 +64,11 @@ public record ClientCompatibilityReport(List<ExtraMod> explicitClientMods, List<
                     || containedModIds.stream().anyMatch(id -> !ClientCleanupGraph.validModId(id))
                     || containedModIds.stream().distinct().count() != containedModIds.size())
                 throw new IllegalArgumentException("Invalid contained mod IDs");
-            if (cleanupEligible && (kind != Kind.EXPLICIT_SERVER || sha512 == null
+            if (cleanupEligible && (kind == Kind.EXPLICIT_CLIENT || sha512 == null
+                    || (kind == Kind.OTHER_EXTRA && fileIdentity == null)
                     || cleanupBlockedReason != null))
                 throw new IllegalArgumentException("Invalid cleanup eligibility");
-            if (cleanupBlockedReason != null && (kind != Kind.EXPLICIT_SERVER
+            if (cleanupBlockedReason != null && (kind == Kind.EXPLICIT_CLIENT
                     || cleanupBlockedReason.isBlank() || cleanupEligible))
                 throw new IllegalArgumentException("Invalid cleanup blocked reason");
         }
@@ -80,12 +110,19 @@ public record ClientCompatibilityReport(List<ExtraMod> explicitClientMods, List<
                     .thenComparing(ExtraMod::version)
                     .thenComparing(ExtraMod::sha512, Comparator.nullsFirst(Comparator.naturalOrder()))).toList()) {
                 digest.update((mod.modId() + "\0" + mod.version() + "\0"
-                        + (mod.sha512() == null ? "unverified" : mod.sha512()) + "\n")
+                        + (mod.sha512() == null ? "unverified" : mod.sha512()) + "\0"
+                        + identityValue(mod.fileIdentity()) + "\n")
                         .getBytes(StandardCharsets.UTF_8));
             }
             return HexFormat.of().formatHex(digest.digest());
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException(exception);
         }
+    }
+
+    static String identityValue(FileIdentity identity) {
+        if (identity == null) return "unknown";
+        return identity.size() + ":" + identity.modifiedTime() + ":"
+                + (identity.fileKey() == null ? "" : identity.fileKey());
     }
 }

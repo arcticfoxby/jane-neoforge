@@ -31,7 +31,8 @@ public record ClientDisablePlan(String serverId, String timestamp, List<Entry> e
                     || version == null || version.isBlank() || sha512 == null
                     || !sha512.matches("[0-9a-f]{128}")
                     || (kind != ClientCompatibilityReport.Kind.EXPLICIT_CLIENT
-                    && kind != ClientCompatibilityReport.Kind.EXPLICIT_SERVER))
+                    && kind != ClientCompatibilityReport.Kind.EXPLICIT_SERVER
+                    && kind != ClientCompatibilityReport.Kind.OTHER_EXTRA))
                 throw new IllegalArgumentException("Invalid disable entry");
             PathSafety.safeExistingJarName(filename);
             containedModIds = List.copyOf(containedModIds);
@@ -105,7 +106,7 @@ public record ClientDisablePlan(String serverId, String timestamp, List<Entry> e
         throw new IOException("No free disable timestamp");
     }
 
-    /** Strict local proof for dedicated-server-entry cleanup; never trusts kind alone. */
+    /** Strict local proof for server-entry and manually selected extra cleanup. */
     public static ClientDisablePlan prepare(Path gameDir, String serverId, RequiredManifest manifest,
                                             ClientCompatibilityReport report,
                                             List<ClientCompatibilityReport.ExtraMod> selected) throws IOException {
@@ -163,10 +164,10 @@ public record ClientDisablePlan(String serverId, String timestamp, List<Entry> e
                                                      ClientCleanupGraph evaluatedGraph,
                                                      String stagedFingerprint) throws IOException {
         if (manifest == null || report == null || selected == null || selected.isEmpty()
-                || (selected.stream().anyMatch(mod -> mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER)
+                || (selected.stream().anyMatch(mod -> mod.kind() != ClientCompatibilityReport.Kind.EXPLICIT_CLIENT)
                 && (!report.cleanupGraph().complete() || evaluatedGraph == null || !evaluatedGraph.complete())))
             throw new IOException("Client cleanup evidence is incomplete");
-        if (selected.stream().noneMatch(mod -> mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER)
+        if (selected.stream().allMatch(mod -> mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_CLIENT)
                 && stagedFingerprint == null)
             return prepare(gameDir, serverId, report, selected);
         Set<String> requiredIds = new HashSet<>();
@@ -181,9 +182,11 @@ public record ClientDisablePlan(String serverId, String timestamp, List<Entry> e
         for (ClientCompatibilityReport.ExtraMod mod : selected) {
             boolean serverEntry = mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER;
             boolean clientEntry = mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_CLIENT;
-            if ((!serverEntry && !clientEntry)
-                    || !(serverEntry ? report.otherExtraMods() : report.explicitClientMods()).contains(mod)
+            boolean otherEntry = mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA;
+            if ((!serverEntry && !clientEntry && !otherEntry)
+                    || !(clientEntry ? report.explicitClientMods() : report.otherExtraMods()).contains(mod)
                     || !mod.verified()
+                    || (otherEntry && (!mod.cleanupEligible() || mod.fileIdentity() == null))
                     || mod.containedModIds().contains("jane")
                     || mod.containedModIds().stream().anyMatch(requiredIds::contains)
                     || requiredHashes.contains(mod.sha512()))
@@ -194,13 +197,15 @@ public record ClientDisablePlan(String serverId, String timestamp, List<Entry> e
             ClientCleanupGraph.PhysicalJar physical = report.cleanupGraph().jars().stream()
                     .filter(jar -> jar.filename().equals(filename)).findFirst()
                     .orElseThrow(() -> new IOException("Client cleanup physical JAR is unknown"));
-            if (!physical.metadataComplete()
+            if (!physical.metadataComplete() || !mod.sha512().equals(physical.observedSha512())
                     || !Set.copyOf(physical.modIds()).equals(Set.copyOf(mod.containedModIds())))
                 throw new IOException("Client cleanup physical Mod IDs differ");
             Path jar = PathSafety.existingJarInMods(gameDir, mod.jar());
             if (!jar.getFileName().toString().equals(filename))
                 throw new IOException("Selected client JAR path changed");
             BasicFileAttributes before = Files.readAttributes(jar, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            if (otherEntry && !mod.fileIdentity().equals(ClientCompatibilityReport.FileIdentity.capture(jar)))
+                throw new IOException("Selected extra JAR identity changed");
             String actual = Hashing.sha512(jar);
             PathSafety.rejectReparsePoint(jar);
             BasicFileAttributes after = Files.readAttributes(jar, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
@@ -208,6 +213,8 @@ public record ClientDisablePlan(String serverId, String timestamp, List<Entry> e
                     || !before.lastModifiedTime().equals(after.lastModifiedTime())
                     || !Objects.equals(before.fileKey(), after.fileKey()))
                 throw new IOException("Selected client JAR changed during verification");
+            if (otherEntry && !mod.fileIdentity().equals(ClientCompatibilityReport.FileIdentity.capture(jar)))
+                throw new IOException("Selected extra JAR identity changed during verification");
             entries.add(new Entry(mod.modId(), mod.displayName(), mod.version(), filename,
                     mod.sha512(), mod.kind(), mod.containedModIds()));
         }

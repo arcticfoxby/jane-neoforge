@@ -35,6 +35,18 @@ class UpdatePlanTest {
     }
 
     @Test
+    void universalCleanupRequiresAnExactDependencyGuard() {
+        var universal = new ClientDisablePlan.Entry("universal", "Universal", "1",
+                "universal.jar", HASH, ClientCompatibilityReport.Kind.OTHER_EXTRA,
+                List.of("universal"));
+        assertThrows(IllegalArgumentException.class, () -> new UpdatePlan(ID, SERVER,
+                "2026-09-18_02-30-15", List.of(), List.of(universal), List.of()));
+        var guarded = new UpdatePlan(ID, SERVER, "2026-09-18_02-30-15", List.of(),
+                List.of(universal), List.of(new ClientDisablePlan.DependencyGuard("universal.jar", HASH)));
+        assertEquals(List.of(universal), guarded.cleanupEntries());
+    }
+
+    @Test
     void replaceAcceptsUnicodeOldNameButNeverUnicodeNewNameOrCmdMetacharacters() {
         String old = "【农夫乐事】farmers-delight-fabric-1.4.3.jar";
         var operation = new UpdatePlan.Operation("farmersdelight", UpdatePlan.Kind.REPLACE,

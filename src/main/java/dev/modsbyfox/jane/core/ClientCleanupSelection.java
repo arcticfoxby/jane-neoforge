@@ -17,7 +17,12 @@ import java.util.Set;
 /** Local, connection-bound selection of physical client JARs to move after exit. */
 public final class ClientCleanupSelection {
     public record SelectedJar(String filename, List<String> containedModIds, String sha512,
-                              ClientCompatibilityReport.Kind kind) {
+                              ClientCompatibilityReport.Kind kind,
+                              ClientCompatibilityReport.FileIdentity fileIdentity) {
+        public SelectedJar(String filename, List<String> containedModIds, String sha512,
+                           ClientCompatibilityReport.Kind kind) {
+            this(filename, containedModIds, sha512, kind, null);
+        }
         public SelectedJar { containedModIds = List.copyOf(containedModIds); }
     }
 
@@ -29,6 +34,8 @@ public final class ClientCleanupSelection {
     private final String serverId;
     private final String manifestDigest;
     private final ClientCompatibilityReport report;
+    private final Set<String> requiredIds;
+    private final Set<String> requiredHashes;
     private final Map<String, ClientCompatibilityReport.ExtraMod> byFilename;
     private final LinkedHashSet<String> selected = new LinkedHashSet<>();
     private final Map<String, ClientCleanupGraph.Decision> decisionCache = new HashMap<>();
@@ -39,6 +46,10 @@ public final class ClientCleanupSelection {
         this.serverId = Objects.requireNonNull(context, "context").serverId();
         this.manifestDigest = OneShotJoinOverride.manifestDigest(context.manifest());
         this.report = Objects.requireNonNull(report, "report");
+        this.requiredIds = context.manifest().entries().stream().map(ManifestEntry::modId)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        this.requiredHashes = context.manifest().entries().stream().map(ManifestEntry::sha512)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
         Map<String, ClientCompatibilityReport.ExtraMod> files = new HashMap<>();
         for (ClientCompatibilityReport.ExtraMod mod : inventory()) {
             if (files.putIfAbsent(mod.filename(), mod) != null)
@@ -79,8 +90,15 @@ public final class ClientCleanupSelection {
     }
 
     public synchronized ClientCleanupGraph.Decision serverDecision(String filename) {
+        return cleanupDecision(filename);
+    }
+
+    /** Dependency decision for a physically verified server-only or manually chosen extra JAR. */
+    public synchronized ClientCleanupGraph.Decision cleanupDecision(String filename) {
         ClientCompatibilityReport.ExtraMod mod = byFilename.get(filename);
-        if (mod == null || mod.kind() != ClientCompatibilityReport.Kind.EXPLICIT_SERVER || !mod.verified())
+        if (mod == null || mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_CLIENT
+                || !mod.verified() || (mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA
+                && !verifiedOtherExtra(mod)))
             return null;
         if (selected.contains(filename)) return currentEvaluation().decision(filename);
         if (decisionCache.containsKey(filename)) return decisionCache.get(filename);
@@ -94,13 +112,14 @@ public final class ClientCleanupSelection {
     /** Returns false for an unsafe or unknown selection; no files are changed here. */
     public synchronized boolean setSelected(String filename, boolean wanted) {
         ClientCompatibilityReport.ExtraMod mod = byFilename.get(filename);
-        if (mod == null || !mod.verified() || mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA)
-            return false;
+        if (mod == null) return false;
         if (selected.contains(filename) == wanted) return true;
         if (wanted) {
+            if (!mod.verified() || (mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA
+                    && !verifiedOtherExtra(mod))) return false;
             Set<String> proposed = new LinkedHashSet<>(selected);
             proposed.add(filename);
-            if (mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER) {
+            if (mod.kind() != ClientCompatibilityReport.Kind.EXPLICIT_CLIENT) {
                 ClientCleanupGraph.Decision decision = report.cleanupGraph().evaluate(proposed)
                         .byFilename().get(filename);
                 if (decision == null || !decision.eligible()) return false;
@@ -122,7 +141,7 @@ public final class ClientCleanupSelection {
             Map<String, ClientCleanupGraph.Decision> decisions = currentEvaluation().byFilename();
             for (String filename : List.copyOf(selected)) {
                 ClientCompatibilityReport.ExtraMod mod = byFilename.get(filename);
-                if (mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER) {
+                if (mod.kind() != ClientCompatibilityReport.Kind.EXPLICIT_CLIENT) {
                     ClientCleanupGraph.Decision decision = decisions.get(filename);
                     if (decision == null || !decision.eligible()) {
                         selected.remove(filename);
@@ -137,7 +156,8 @@ public final class ClientCleanupSelection {
     /** Captures all selected physical files and the complete dependency/inventory evidence. */
     public synchronized Snapshot snapshot() {
         List<SelectedJar> jars = selectedExtras().stream()
-                .map(mod -> new SelectedJar(mod.filename(), mod.containedModIds(), mod.sha512(), mod.kind()))
+                .map(mod -> new SelectedJar(mod.filename(), mod.containedModIds(), mod.sha512(),
+                        mod.kind(), mod.fileIdentity()))
                 .toList();
         return new Snapshot(serverId, manifestDigest, inventoryDigest(),
                 report.cleanupGraph().fingerprint(), revision, jars);
@@ -157,13 +177,16 @@ public final class ClientCleanupSelection {
         for (SelectedJar jar : expected.selectedJars()) {
             ClientCompatibilityReport.ExtraMod mod = fresh.get(jar.filename());
             if (mod == null || !mod.verified() || !mod.sha512().equals(jar.sha512())
-                    || mod.kind() != jar.kind() || !mod.containedModIds().equals(jar.containedModIds()))
+                    || mod.kind() != jar.kind() || !mod.containedModIds().equals(jar.containedModIds())
+                    || !Objects.equals(mod.fileIdentity(), jar.fileIdentity())
+                    || (mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA
+                    && !verifiedOtherExtra(mod, currentReport.cleanupGraph())))
                 return false;
         }
         Map<String, ClientCleanupGraph.Decision> decisions = currentReport.cleanupGraph()
                 .evaluate(Set.copyOf(selected)).byFilename();
         for (SelectedJar jar : expected.selectedJars())
-            if (jar.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER) {
+            if (jar.kind() != ClientCompatibilityReport.Kind.EXPLICIT_CLIENT) {
                 ClientCleanupGraph.Decision decision = decisions.get(jar.filename());
                 if (decision == null || !decision.eligible()) return false;
             }
@@ -174,7 +197,7 @@ public final class ClientCleanupSelection {
         Map<String, ClientCleanupGraph.Decision> decisions = currentEvaluation().byFilename();
         for (String filename : selected) {
             ClientCompatibilityReport.ExtraMod mod = byFilename.get(filename);
-            if (mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER) {
+            if (mod.kind() != ClientCompatibilityReport.Kind.EXPLICIT_CLIENT) {
                 ClientCleanupGraph.Decision decision = decisions.get(filename);
                 if (decision == null || !decision.eligible()) return false;
             }
@@ -186,6 +209,23 @@ public final class ClientCleanupSelection {
         if (currentEvaluation == null)
             currentEvaluation = report.cleanupGraph().evaluate(Set.copyOf(selected));
         return currentEvaluation;
+    }
+
+    private boolean verifiedOtherExtra(ClientCompatibilityReport.ExtraMod mod) {
+        return !mod.containedModIds().stream().anyMatch(requiredIds::contains)
+                && !requiredHashes.contains(mod.sha512())
+                && verifiedOtherExtra(mod, report.cleanupGraph());
+    }
+
+    private static boolean verifiedOtherExtra(ClientCompatibilityReport.ExtraMod mod,
+                                              ClientCleanupGraph graph) {
+        if (mod.kind() != ClientCompatibilityReport.Kind.OTHER_EXTRA || !mod.cleanupEligible()
+                || mod.fileIdentity() == null || !mod.verified() || !graph.complete()) return false;
+        ClientCleanupGraph.PhysicalJar physical = graph.jars().stream()
+                .filter(jar -> jar.filename().equals(mod.filename())).findFirst().orElse(null);
+        return physical != null && physical.metadataComplete()
+                && mod.sha512().equals(physical.observedSha512())
+                && Set.copyOf(physical.modIds()).equals(Set.copyOf(mod.containedModIds()));
     }
 
     private void invalidateEvaluation() {
@@ -211,6 +251,7 @@ public final class ClientCleanupSelection {
                 update(digest, mod.version());
                 update(digest, mod.kind().name());
                 update(digest, mod.sha512() == null ? "" : mod.sha512());
+                update(digest, ClientCompatibilityReport.identityValue(mod.fileIdentity()));
                 for (String id : mod.containedModIds().stream().sorted().toList()) update(digest, id);
             }
             return HexFormat.of().formatHex(digest.digest());

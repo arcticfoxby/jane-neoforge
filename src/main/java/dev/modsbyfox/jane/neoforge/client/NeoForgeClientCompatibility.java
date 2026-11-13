@@ -101,6 +101,7 @@ public final class NeoForgeClientCompatibility {
             }
             boolean clientOnly = explicitlyClientOnly(jar.fmlEvidence());
             boolean serverOnly = !clientOnly && explicitlyServerOnly(jar.fmlEvidence());
+            ClientCompatibilityReport.FileIdentity identity = identity(gameDir, jar.jar());
             String hash = null;
             boolean staleFile = false;
             if (clientOnly) {
@@ -124,6 +125,28 @@ public final class NeoForgeClientCompatibility {
                             jar.canonicalId(), exception.getClass().getSimpleName());
                 }
             }
+            if (!clientOnly && !serverOnly && identity != null && cleanupGraph.complete()) {
+                ClientCleanupGraph.PhysicalJar graphJar = cleanupGraph.jars().stream()
+                        .filter(physical -> physical.filename().equals(jar.jar().getFileName().toString()))
+                        .findFirst().orElse(null);
+                if (graphJar != null && graphJar.metadataComplete()
+                        && graphJar.observedSha512() != null
+                        && Set.copyOf(graphJar.modIds()).equals(Set.copyOf(jar.modIds()))) {
+                    try {
+                        String candidate = hasher.hash(jar.jar());
+                        if (graphJar.observedSha512().equals(candidate)
+                                && identity.equals(identity(gameDir, jar.jar()))) hash = candidate;
+                    } catch (IOException | RuntimeException exception) {
+                        LOGGER.warn("Could not verify universal client extra {}: {}", jar.canonicalId(),
+                                exception.getClass().getSimpleName());
+                    }
+                }
+            }
+            if (identity != null && !identity.equals(identity(gameDir, jar.jar()))) {
+                identity = null;
+                hash = null;
+                if (serverOnly) serverOnly = false;
+            }
             if (serverOnly && hash != null && cleanupGraph.complete()) {
                 ClientCleanupGraph.PhysicalJar graphJar = cleanupGraph.jars().stream()
                         .filter(physical -> physical.filename().equals(
@@ -135,6 +158,7 @@ public final class NeoForgeClientCompatibility {
                     staleFile = true;
                 }
             }
+            if (!safeCleanupName(jar.jar().getFileName().toString())) hash = null;
             ClientCompatibilityReport.Kind kind = clientOnly
                     ? ClientCompatibilityReport.Kind.EXPLICIT_CLIENT
                     : serverOnly ? ClientCompatibilityReport.Kind.EXPLICIT_SERVER
@@ -144,7 +168,8 @@ public final class NeoForgeClientCompatibility {
                     blankFallback(jar.version(), "unknown"), jar.jar().getFileName().toString(),
                     hash, kind, jar.jar(), jar.modIds(), false,
                     serverOnly ? staleFile ? "STALE_FILE"
-                            : hash == null ? "UNVERIFIED_HASH" : "DEPENDENCY_CHECK_PENDING" : null);
+                            : hash == null ? "UNVERIFIED_HASH" : "DEPENDENCY_CHECK_PENDING" : null,
+                    identity);
             if (clientOnly) explicit.add(extra);
             else other.add(extra);
         }
@@ -155,8 +180,13 @@ public final class NeoForgeClientCompatibility {
         Set<String> defaultSelected = cleanupGraph.safeDefaultSelection(hashedServerCandidates);
         List<ClientCompatibilityReport.ExtraMod> assessed = new ArrayList<>();
         for (ClientCompatibilityReport.ExtraMod extra : other) {
-            if (extra.kind() != ClientCompatibilityReport.Kind.EXPLICIT_SERVER) {
-                assessed.add(extra);
+            if (extra.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA) {
+                boolean eligible = extra.sha512() != null && extra.fileIdentity() != null
+                        && cleanupGraph.complete();
+                assessed.add(new ClientCompatibilityReport.ExtraMod(extra.modId(), extra.displayName(),
+                        extra.version(), extra.filename(), extra.sha512(), extra.kind(), extra.jar(),
+                        extra.containedModIds(), eligible,
+                        eligible ? null : "UNVERIFIED_PHYSICAL_EVIDENCE", extra.fileIdentity()));
                 continue;
             }
             boolean eligible = defaultSelected.contains(extra.filename());
@@ -166,7 +196,7 @@ public final class NeoForgeClientCompatibility {
                     : cleanupBlockedReason(cleanupGraph, defaultSelected, extra.filename());
             assessed.add(new ClientCompatibilityReport.ExtraMod(extra.modId(), extra.displayName(),
                     extra.version(), extra.filename(), extra.sha512(), extra.kind(), extra.jar(),
-                    extra.containedModIds(), eligible, blockedReason));
+                    extra.containedModIds(), eligible, blockedReason, extra.fileIdentity()));
         }
         return new ClientCompatibilityReport(explicit, assessed,
                 ClientCompatibilityReport.fingerprint(explicit), cleanupGraph);
@@ -195,5 +225,22 @@ public final class NeoForgeClientCompatibility {
 
     private static String blankFallback(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private static ClientCompatibilityReport.FileIdentity identity(Path gameDir, Path jar) {
+        try {
+            return ClientCompatibilityReport.FileIdentity.capture(PathSafety.existingJarInMods(gameDir, jar));
+        } catch (IOException | RuntimeException exception) {
+            return null;
+        }
+    }
+
+    private static boolean safeCleanupName(String filename) {
+        try {
+            PathSafety.safeExistingJarName(filename);
+            return true;
+        } catch (IllegalArgumentException unsafe) {
+            return false;
+        }
     }
 }

@@ -1,8 +1,12 @@
 package dev.modsbyfox.jane.neoforge.client.ui;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import dev.modsbyfox.jane.core.ClientCompatibilityReport;
+import java.nio.file.Path;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class ClientUpdateConfirmScreenTest {
@@ -21,5 +25,17 @@ class ClientUpdateConfirmScreenTest {
                         "Selected physical JARs must remain reachable by scrolling");
             }
         }
+    }
+
+    @Test void otherExtraAlwaysRequiresSeparateRiskAcknowledgement() {
+        var client = new ClientCompatibilityReport.ExtraMod("client", "Client", "1",
+                "client.jar", "a".repeat(128), ClientCompatibilityReport.Kind.EXPLICIT_CLIENT,
+                Path.of("mods", "client.jar"));
+        var other = new ClientCompatibilityReport.ExtraMod("other", "Other", "1",
+                "other.jar", null, ClientCompatibilityReport.Kind.OTHER_EXTRA,
+                Path.of("mods", "other.jar"));
+        assertFalse(ClientUpdateConfirmScreen.requiresOtherRisk(List.of(client)));
+        assertTrue(ClientUpdateConfirmScreen.requiresOtherRisk(List.of(other)));
+        assertTrue(ClientUpdateConfirmScreen.requiresOtherRisk(List.of(client, other)));
     }
 }

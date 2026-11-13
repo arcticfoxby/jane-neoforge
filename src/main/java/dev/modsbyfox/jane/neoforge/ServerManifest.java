@@ -63,6 +63,7 @@ public final class ServerManifest {
 
     static Prepared prepare(Path gameDir, List<NeoForgePhysicalDiscovery.PhysicalJar> jars,
                             EvidenceSource evidenceSource, String configIdentity) throws IOException {
+        JaneBlacklist blacklist = JaneBlacklist.open(gameDir);
         List<ManifestEntry> entries = new ArrayList<>();
         List<Classified> classified = new ArrayList<>();
         Map<String, Path> filesByHash = new HashMap<>();
@@ -83,6 +84,15 @@ public final class ServerManifest {
             String sha512 = Hashing.sha512(jar);
             if (Files.size(jar) != size || !Files.getLastModifiedTime(jar).equals(modified))
                 throw new IOException("Physical mod JAR changed while hashing: " + jar.getFileName());
+            if (blacklist.matches(jar, size, sha512)) {
+                ClientRequirementClassifier.Result excluded = new ClientRequirementClassifier.Result(
+                        ClientRequirement.NOT_REQUIRED, "blacklist_exact_copy", List.of(), false, List.of());
+                classified.add(new Classified(physical, excluded, size, sha512));
+                LOGGER.info("Jane mod={} file={} client requirement=NOT_REQUIRED manifest=excluded "
+                                + "reason=blacklist_exact_copy hash={}", physical.canonicalId(),
+                        jar.getFileName(), sha512.substring(0, 12));
+                continue;
+            }
             JarAnalysisResult analysis;
             try {
                 String evidenceIdentity = analysisIdentity(configIdentity, physical);

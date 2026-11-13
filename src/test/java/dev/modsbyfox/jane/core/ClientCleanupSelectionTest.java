@@ -3,6 +3,8 @@ package dev.modsbyfox.jane.core;
 import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
@@ -79,5 +81,48 @@ class ClientCleanupSelectionTest {
         assertTrue(plan.operations().isEmpty());
         assertEquals(Set.of("a.jar", "b.jar"), plan.cleanupEntries().stream()
                 .map(ClientDisablePlan.Entry::filename).collect(java.util.stream.Collectors.toSet()));
+    }
+
+    @Test void universalExtraRequiresPhysicalProofAndManualSelection() {
+        String hash = "f".repeat(128);
+        var identity = new ClientCompatibilityReport.FileIdentity(16,
+                FileTime.from(Instant.parse("2026-01-01T00:00:00Z")), "physical-1");
+        var universal = new ClientCompatibilityReport.ExtraMod("universal", "Universal", "1",
+                "universal.jar", hash, ClientCompatibilityReport.Kind.OTHER_EXTRA,
+                Path.of("mods", "universal.jar"), List.of("universal"), true, null, identity);
+        var graph = new ClientCleanupGraph(List.of(new ClientCleanupGraph.PhysicalJar(
+                "universal.jar", List.of("universal"), List.of(), true, hash)), List.of(), true);
+        var report = new ClientCompatibilityReport(List.of(), List.of(universal),
+                ClientCompatibilityReport.fingerprint(List.of()), graph);
+        ClientCleanupSelection selection = new ClientCleanupSelection(CONTEXT, report);
+        assertTrue(selection.selectedFilenames().isEmpty(), "Universal extras must never be preselected");
+        assertTrue(selection.cleanupDecision("universal.jar").eligible());
+        assertTrue(selection.setSelected("universal.jar", true));
+        ClientCleanupSelection.Snapshot approved = selection.snapshot();
+        assertTrue(selection.stillMatches(approved, CONTEXT, report));
+        var changed = new ClientCompatibilityReport.ExtraMod("universal", "Universal", "1",
+                "universal.jar", hash, ClientCompatibilityReport.Kind.OTHER_EXTRA,
+                Path.of("mods", "universal.jar"), List.of("universal"), true, null,
+                new ClientCompatibilityReport.FileIdentity(17, identity.modifiedTime(), "physical-2"));
+        var changedReport = new ClientCompatibilityReport(List.of(), List.of(changed),
+                ClientCompatibilityReport.fingerprint(List.of()), graph);
+        assertFalse(selection.stillMatches(approved, CONTEXT, changedReport));
+    }
+
+    @Test void universalExtraWithIncompleteOrMismatchedEvidenceCannotBeSelected() {
+        String hash = "f".repeat(128);
+        var identity = new ClientCompatibilityReport.FileIdentity(16,
+                FileTime.from(Instant.parse("2026-01-01T00:00:00Z")), "physical-1");
+        var universal = new ClientCompatibilityReport.ExtraMod("universal", "Universal", "1",
+                "universal.jar", hash, ClientCompatibilityReport.Kind.OTHER_EXTRA,
+                Path.of("mods", "universal.jar"), List.of("universal"), true, null, identity);
+        var missingGraph = new ClientCompatibilityReport(List.of(), List.of(universal),
+                ClientCompatibilityReport.fingerprint(List.of()), ClientCleanupGraph.unavailable());
+        assertFalse(new ClientCleanupSelection(CONTEXT, missingGraph).setSelected("universal.jar", true));
+        var staleGraph = new ClientCleanupGraph(List.of(new ClientCleanupGraph.PhysicalJar(
+                "universal.jar", List.of("universal"), List.of(), true, "e".repeat(128))), List.of(), true);
+        var staleReport = new ClientCompatibilityReport(List.of(), List.of(universal),
+                ClientCompatibilityReport.fingerprint(List.of()), staleGraph);
+        assertFalse(new ClientCleanupSelection(CONTEXT, staleReport).setSelected("universal.jar", true));
     }
 }

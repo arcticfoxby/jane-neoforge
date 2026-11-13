@@ -80,10 +80,11 @@ public record UpdatePlan(String syncId, String serverId, String timestamp, List<
             if (!guardedNames.add(guard.filename().toLowerCase(Locale.ROOT)))
                 throw new IllegalArgumentException("Duplicate dependency guard");
         for (ClientDisablePlan.Entry entry : cleanupEntries) {
-            if (entry.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER
+            if ((entry.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER
+                    || entry.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA)
                     && dependencyGuards.stream().noneMatch(guard -> guard.filename().equals(entry.filename())
                     && guard.sha512().equals(entry.sha512())))
-                throw new IllegalArgumentException("Server-entry cleanup lacks exact dependency guard");
+                throw new IllegalArgumentException("Extra JAR cleanup lacks exact dependency guard");
         }
     }
 

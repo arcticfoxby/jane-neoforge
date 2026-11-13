@@ -2,11 +2,13 @@ package dev.modsbyfox.jane.neoforge.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import dev.modsbyfox.jane.core.ClientCleanupGraph;
 import dev.modsbyfox.jane.core.ClientCompatibilityReport;
+import dev.modsbyfox.jane.core.Hashing;
 import dev.modsbyfox.jane.core.ManifestEntry;
 import dev.modsbyfox.jane.core.RequiredManifest;
 import dev.modsbyfox.jane.neoforge.ClientRequirementClassifier;
@@ -124,6 +126,44 @@ class NeoForgeClientCompatibilityTest {
         assertNull(extra.sha512());
         assertFalse(extra.cleanupEligible());
         assertEquals("STALE_FILE", extra.cleanupBlockedReason());
+    }
+
+    @Test
+    void universalExtraNeedsCurrentPhysicalHashAndCompleteDependencyEvidence() throws IOException {
+        Path mods = Files.createDirectories(gameDir.resolve("mods"));
+        Path source = Files.writeString(mods.resolve("universal.jar"), "universal-extra");
+        String hash = Hashing.sha512(source);
+        var jar = jar("universal", true, ClientRequirementClassifier.EntrypointSide.DEFAULT);
+        var graph = new ClientCleanupGraph(List.of(new ClientCleanupGraph.PhysicalJar(
+                "universal.jar", List.of("universal"), List.of(), true, hash)), List.of(), true);
+        var report = NeoForgeClientCompatibility.classify(gameDir, empty(), List.of(jar),
+                Hashing::sha512, graph);
+        var extra = report.unclassifiedExtraMods().getFirst();
+        assertEquals(hash, extra.sha512());
+        assertNotNull(extra.fileIdentity());
+
+        var staleGraph = new ClientCleanupGraph(List.of(new ClientCleanupGraph.PhysicalJar(
+                "universal.jar", List.of("universal"), List.of(), true, HASH)), List.of(), true);
+        var stale = NeoForgeClientCompatibility.classify(gameDir, empty(), List.of(jar),
+                Hashing::sha512, staleGraph);
+        assertNull(stale.unclassifiedExtraMods().getFirst().sha512());
+    }
+
+    @Test
+    void jarNameUnsafeForOfflineBatchIsVisibleButCannotBeSelected() throws IOException {
+        Path mods = Files.createDirectories(gameDir.resolve("mods"));
+        Path source = Files.writeString(mods.resolve("extra%name.jar"), "extra");
+        String hash = Hashing.sha512(source);
+        var jar = new NeoForgePhysicalDiscovery.PhysicalJar(source, List.of("extra"), "extra",
+                "Extra", "1", new ClientRequirementClassifier.FmlEvidence(true,
+                List.of(ClientRequirementClassifier.EntrypointSide.DEFAULT)));
+        var graph = new ClientCleanupGraph(List.of(new ClientCleanupGraph.PhysicalJar(
+                "extra%name.jar", List.of("extra"), List.of(), true, hash)), List.of(), true);
+        var report = NeoForgeClientCompatibility.classify(gameDir, empty(), List.of(jar),
+                Hashing::sha512, graph);
+        var extra = report.unclassifiedExtraMods().getFirst();
+        assertNull(extra.sha512());
+        assertFalse(extra.cleanupEligible());
     }
 
     @Test

@@ -10,6 +10,15 @@ final class CleanupLabels {
 
     static Component status(ClientCompatibilityReport.ExtraMod mod,
                             ClientCleanupGraph.Decision decision, boolean selected) {
+        if (mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA && !mod.cleanupEligible())
+            return switch (mod.cleanupBlockedReason() == null ? "" : mod.cleanupBlockedReason()) {
+                case "UNKNOWN_METADATA" -> Component.translatable("jane.cleanup.unknown_metadata");
+                case "STALE_FILE" -> Component.translatable("jane.cleanup.stale_file");
+                case "PHYSICAL_METADATA_MISMATCH" -> Component.translatable("jane.cleanup.metadata_mismatch");
+                case "UNVERIFIED_HASH", "UNVERIFIED_PHYSICAL_EVIDENCE" ->
+                        Component.translatable("jane.cleanup.unverified");
+                default -> Component.translatable("jane.cleanup.unknown");
+            };
         if (!mod.verified()) return Component.translatable("jane.cleanup.unverified");
         if (decision == null) return Component.translatable("jane.cleanup.unknown");
         if (!decision.eligible()) return blocked(decision.block());

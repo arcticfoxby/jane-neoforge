@@ -31,7 +31,9 @@ public final class SyncDecisionAudit {
             "selectedOptional", "defaultOptional", "selectedCount", "downloadCount",
             "requiredBaseline", "joinAction", "selectionTimestamp", "status", "result",
             "matched", "extraClientMods", "preservedExtras", "hashMismatch",
-            "comparisonStatus", "requiredHash");
+            "comparisonStatus", "requiredHash", "kind", "filename",
+            "candidateCount", "verifiedCount", "defaultSelectedCount", "blockedCount",
+            "installCount", "cleanupCount");
 
     private SyncDecisionAudit() { }
 
@@ -82,12 +84,29 @@ public final class SyncDecisionAudit {
         if (name.equals("modId")) return MOD_ID.matcher(value).matches() ? value : "[REDACTED]";
         if (name.equals("requiredHash")) return value.matches("[0-9a-fA-F]{12}")
                 ? value.toLowerCase(java.util.Locale.ROOT) : "[REDACTED]";
+        if (name.equals("kind")) {
+            for (ClientCompatibilityReport.Kind kind : ClientCompatibilityReport.Kind.values())
+                if (kind.name().equals(value)) return value;
+            return "[REDACTED]";
+        }
+        if (name.equals("filename")) {
+            try {
+                PathSafety.safeExistingJarName(value);
+                return value.length() <= 96 && value.matches("[A-Za-z0-9._+-]{1,96}")
+                        ? value : "[REDACTED]";
+            } catch (IllegalArgumentException invalid) {
+                return "[REDACTED]";
+            }
+        }
         if (name.equals("required") || name.equals("missing") || name.equals("versionMismatch")
                 || name.equals("fileError") || name.equals("skippedRequired") || name.equals("selectedRequired")
                 || name.equals("selectedOptional") || name.equals("defaultOptional")
                 || name.equals("selectedCount") || name.equals("downloadCount") || name.equals("matched")
                 || name.equals("extraClientMods") || name.equals("preservedExtras")
-                || name.equals("hashMismatch"))
+                || name.equals("hashMismatch") || name.equals("candidateCount")
+                || name.equals("verifiedCount") || name.equals("defaultSelectedCount")
+                || name.equals("blockedCount") || name.equals("installCount")
+                || name.equals("cleanupCount"))
             return NUMBER.matcher(value).matches() ? value : "[REDACTED]";
         return value.length() <= 96 && value.matches("[A-Za-z0-9._+:-]{1,96}") ? value : "[REDACTED]";
     }

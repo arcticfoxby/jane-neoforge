@@ -164,8 +164,10 @@ final class CompatibilityReviewScreen extends UiScreen {
     private boolean selectable(ClientCompatibilityReport.ExtraMod mod) {
         if (!mod.verified()) return false;
         if (mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_CLIENT) return true;
-        if (mod.kind() != ClientCompatibilityReport.Kind.EXPLICIT_SERVER) return false;
-        ClientCleanupGraph.Decision decision = cleanupSelection.serverDecision(mod.filename());
+        if (mod.kind() != ClientCompatibilityReport.Kind.EXPLICIT_SERVER
+                && mod.kind() != ClientCompatibilityReport.Kind.OTHER_EXTRA) return false;
+        if (mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA && !mod.cleanupEligible()) return false;
+        ClientCleanupGraph.Decision decision = cleanupSelection.cleanupDecision(mod.filename());
         return cleanupSelection.isSelected(mod.filename()) || decision != null && decision.eligible();
     }
 
@@ -181,19 +183,17 @@ final class CompatibilityReviewScreen extends UiScreen {
         graphics.fill(10, y, width - 10, y + row.height() - 2,
                 mouseX >= 10 && mouseX < width - 10 && mouseY >= y && mouseY < y + row.height()
                         ? 0xAA444444 : 0x88000000);
-        int left = mod.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA ? 16 : 33;
-        if (left == 33) graphics.drawString(font, selected ? "☑" : "☐", 16, y + 16,
+        int left = 33;
+        graphics.drawString(font, selected ? "☑" : "☐", 16, y + 16,
                 canToggle ? 0xFFFFFF : 0x777777);
         graphics.drawString(font, fit(mod.displayName(), width - left - 20), left, y + 3, 0xFFFFFF);
         int textWidth = width - left - 20;
         graphics.drawString(font, fit(mod.modId() + " · " + mod.version(), textWidth),
                 left, y + 14, 0xCCCCCC);
         graphics.drawString(font, fit(mod.filename(), textWidth), left, y + 25, 0xFFCC77);
-        Component status = mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_SERVER
-                ? CleanupLabels.status(mod, cleanupSelection.serverDecision(mod.filename()), selected)
-                : Component.translatable(mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_CLIENT
-                        ? mod.verified() ? "jane.compat.explicit" : "jane.compat.unverified"
-                        : "jane.compat.other");
+        Component status = mod.kind() == ClientCompatibilityReport.Kind.EXPLICIT_CLIENT
+                ? Component.translatable(mod.verified() ? "jane.compat.explicit" : "jane.compat.unverified")
+                : CleanupLabels.status(mod, cleanupSelection.cleanupDecision(mod.filename()), selected);
         graphics.drawString(font, fit(status, textWidth), left, y + 36,
                 canToggle ? 0x88CCFF : 0xFF7777);
     }
@@ -212,7 +212,7 @@ final class CompatibilityReviewScreen extends UiScreen {
         boolean selected = !cleanupSelection.isSelected(row.mod().filename());
         if (cleanupSelection.setSelected(row.mod().filename(), selected))
             audit(selected ? "USER_SELECT_EXTRA_DISABLE" : "USER_DESELECT_EXTRA_DISABLE", Map.of(
-                    "modId", row.mod().modId(), "selectedCount",
+                    "modId", row.mod().modId(), "kind", row.mod().kind().name(), "selectedCount",
                     Integer.toString(cleanupSelection.selectedExtras().size())));
         return true;
     }

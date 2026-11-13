@@ -106,9 +106,12 @@ final class SyncScreen extends UiScreen {
                 "modId", modId, "selectedCount", Integer.toString(selection.selectedUnmatchedModIds().size())));
     }
 
-    void cleanupSelectionChanged(String filename, boolean selected) {
-        audit(selected ? "EXTRA_SERVER_SELECTED" : "EXTRA_SERVER_DESELECTED", Map.of(
-                "filename", filename, "selectedCount", Long.toString(cleanupSelection.selectedServerCount())));
+    void cleanupSelectionChanged(ClientCompatibilityReport.ExtraMod extra, boolean selected) {
+        boolean other = extra.kind() == ClientCompatibilityReport.Kind.OTHER_EXTRA;
+        audit(other ? selected ? "EXTRA_OTHER_SELECTED" : "EXTRA_OTHER_DESELECTED"
+                : selected ? "EXTRA_SERVER_SELECTED" : "EXTRA_SERVER_DESELECTED", Map.of(
+                "filename", extra.filename(), "selectedCount",
+                Integer.toString(cleanupSelection.selectedExtras().size())));
     }
 
     @Override protected void init() {
